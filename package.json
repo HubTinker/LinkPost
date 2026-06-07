@@ -1,0 +1,22 @@
+{
+  "name": "linkpost-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "poll": "node poll.js",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.0.4",
+    "@vercel/kv": "^3.0.0",
+    "dotenv": "^17.4.2",
+    "hono": "^4.4.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
