@@ -302,7 +302,6 @@ app.get('/debug/:key', async (c) => {
   const allKeys = await getAllLinks()
   return c.json({
     searchedKey: key,
-    rawKey: `${LINK_PREFIX}${key}`,
     found: !!data,
     data: data ?? null,
     allKeys
