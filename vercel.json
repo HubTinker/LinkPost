@@ -1,6 +1,15 @@
 {
   "version": 2,
+  "buildCommand": null,
+  "functions": {
+    "api/index.js": {
+      "runtime": "@vercel/edge@3.0.0",
+      "entrypoint": "api/index.js"
+    }
+  },
   "routes": [
-    { "src": "/(.*)", "dest": "/api/index.js" }
+    { "src": "/webhook", "dest": "/api/index.js" },
+    { "src": "/setup-webhook", "dest": "/api/index.js" },
+    { "src": "/", "dest": "/api/index.js" }
   ]
 }
