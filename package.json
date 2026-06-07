@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node server.js",
-    "start": "node server.js",
+    "dev": "node scripts/dev-server.js",
+    "start": "node scripts/dev-server.js",
     "test": "node --test test/*.test.js",
     "poll": "node poll.js",
     "deploy": "vercel --prod"

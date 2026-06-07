@@ -318,12 +318,8 @@ describe('callback_query handling', () => {
   it('should delete link on del: callback', async () => {
     await kv.set('link:test', { url: 'https://x.com', message: 'Msg' })
     await handleCallbackQuery({
-      callback_query: {
-        id: 'cb1',
-        chat_id: 1,
-        user: { user_id: 123 },
-        data: 'del:test'
-      }
+      callback: { payload: 'del:test', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
     })
     const saved = await kv.get('link:test')
     assert.equal(saved, null)
@@ -333,12 +329,8 @@ describe('callback_query handling', () => {
 
   it('should deny delete callback for non-admin', async () => {
     await handleCallbackQuery({
-      callback_query: {
-        id: 'cb1',
-        chat_id: 1,
-        user: { user_id: 999 },
-        data: 'del:test'
-      }
+      callback: { payload: 'del:test', user: { user_id: 999 } },
+      message: { recipient: { chat_id: 1 } }
     })
     const responseCall = fetchCalls.find(c => c.body?.text?.includes('⛔'))
     assert.ok(responseCall, 'deny response not found')

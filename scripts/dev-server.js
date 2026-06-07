@@ -1,6 +1,6 @@
 import dotenv from 'dotenv'
 import { serve } from '@hono/node-server'
-import { app } from './api/index.js'
+import { app } from '../api/index.js'
 dotenv.config({ path: '.env.local' })
 
 const port = parseInt(process.env.PORT ?? '3000', 10)
