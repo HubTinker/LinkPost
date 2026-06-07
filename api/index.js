@@ -18,12 +18,6 @@ export const config = { runtime: 'edge' }
 
 const app = new Hono()
 
-// ── Подгружаем .env.local для локального запуска (Vercel Edge подставляет сам) ─
-try {
-  const { config: dotenvConfig } = await import('dotenv')
-  dotenvConfig({ path: '.env.local' })
-} catch {}
-
 // ── Настройки ─────────────────────────────────────────────────────────────────
 const ADMIN_IDS = (process.env.ADMIN_USER_IDS ?? '')
   .split(',')
