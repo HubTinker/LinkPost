@@ -295,5 +295,19 @@ app.get('/setup-webhook', async (c) => {
 
 app.get('/', (c) => c.json({ status: 'LinkPost Bot is running 🚀' }))
 
+/** Диагностика — проверка ключа в KV */
+app.get('/debug/:key', async (c) => {
+  const key = c.req.param('key')
+  const data = await getLink(key)
+  const allKeys = await getAllLinks()
+  return c.json({
+    searchedKey: key,
+    rawKey: `${LINK_PREFIX}${key}`,
+    found: !!data,
+    data: data ?? null,
+    allKeys
+  })
+})
+
 export default handle(app)
 export { app, handleBotStarted, handleMessage, handleCallbackQuery }
