@@ -146,7 +146,7 @@ describe('handleMessage commands', () => {
     assert.ok(responseCall, 'URL length validation error not found')
   })
 
-  it('/dellink should delete existing link', async () => {
+  it('/dellink should show confirmation instead of deleting', async () => {
     await kv.set('link:test', { url: 'https://example.com', message: 'Msg' })
     await handleMessage({
       chat_id: 1,
@@ -154,9 +154,13 @@ describe('handleMessage commands', () => {
       user: { user_id: 123 }
     })
     const saved = await kv.get('link:test')
-    assert.equal(saved, null, 'link should be deleted')
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('🗑'))
-    assert.ok(responseCall, 'delete confirmation not found')
+    assert.ok(saved, 'link should NOT be deleted yet')
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('🗑 Удалить'))
+    assert.ok(responseCall, 'confirmation prompt not found')
+    assert.ok(responseCall.body.attachments[0].type === 'inline_keyboard', 'should have keyboard')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'confirm_del:test'), 'should have confirm_del button')
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
   })
 
   it('/dellink should warn on missing key', async () => {
@@ -315,19 +319,116 @@ describe('callback_query handling', () => {
     kv._clear()
   })
 
-  it('should delete link on del: callback', async () => {
+  it('should show confirmation on del: callback without deleting', async () => {
     await kv.set('link:test', { url: 'https://x.com', message: 'Msg' })
     await handleCallbackQuery({
       callback: { payload: 'del:test', user: { user_id: 123 } },
       message: { recipient: { chat_id: 1 } }
     })
     const saved = await kv.get('link:test')
+    assert.ok(saved, 'link should NOT be deleted yet')
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('🗑 Удалить'))
+    assert.ok(responseCall, 'confirmation prompt not found')
+    assert.equal(responseCall.body.attachments[0].type, 'inline_keyboard')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'confirm_del:test'), 'should have confirm_del button')
+    assert.ok(buttons.some(b => b.payload === 'links'), 'should have links button')
+  })
+
+  it('should delete link on confirm_del: callback', async () => {
+    await kv.set('link:test', { url: 'https://x.com', message: 'Msg' })
+    await handleCallbackQuery({
+      callback: { payload: 'confirm_del:test', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const saved = await kv.get('link:test')
     assert.equal(saved, null)
     const responseCall = fetchCalls.find(c => c.body?.text?.includes('🗑'))
     assert.ok(responseCall, 'delete confirmation not found')
+    assert.ok(responseCall.body.text.includes('test'), 'should mention key name')
   })
 
-  it('should deny delete callback for non-admin', async () => {
+  it('should show main menu on back callback', async () => {
+    await handleCallbackQuery({
+      callback: { payload: 'back', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Привет'))
+    assert.ok(responseCall, 'menu response not found')
+    assert.ok(responseCall.body.text.includes('Админ'), 'should show admin menu')
+  })
+
+  it('should show links list with back button', async () => {
+    await kv.set('link:a', { url: 'https://a.com', message: 'A' })
+    await kv.sadd('links_all', 'a')
+    await handleCallbackQuery({
+      callback: { payload: 'links', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Активные связки'))
+    assert.ok(responseCall, 'links list not found')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+  })
+
+  it('should show empty links state with back button', async () => {
+    await handleCallbackQuery({
+      callback: { payload: 'links', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('📭'))
+    assert.ok(responseCall, 'empty state not found')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+  })
+
+  it('should show create help with back button', async () => {
+    await handleCallbackQuery({
+      callback: { payload: 'create', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('/setlink'))
+    assert.ok(responseCall, 'create help not found')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+  })
+
+  it('should show users count with back button', async () => {
+    await handleCallbackQuery({
+      callback: { payload: 'users', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('В базе'))
+    assert.ok(responseCall, 'users response not found')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+  })
+
+  it('should show broadcast placeholder with back button', async () => {
+    await handleCallbackQuery({
+      callback: { payload: 'broadcast', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Рассылка'))
+    assert.ok(responseCall, 'broadcast response not found')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+  })
+
+  it('should handle confirm_del: with colon in key name', async () => {
+    await kv.set('link:key:sub', { url: 'https://x.com', message: 'Msg' })
+    await handleCallbackQuery({
+      callback: { payload: 'confirm_del:key:sub', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const saved = await kv.get('link:key:sub')
+    assert.equal(saved, null)
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('🗑'))
+    assert.ok(responseCall, 'delete response not found')
+    assert.ok(responseCall.body.text.includes('key:sub'), 'should mention full key with colon')
+  })
+
+  it('should deny callback for non-admin', async () => {
     await handleCallbackQuery({
       callback: { payload: 'del:test', user: { user_id: 999 } },
       message: { recipient: { chat_id: 1 } }

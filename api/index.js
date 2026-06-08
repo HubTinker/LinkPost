@@ -36,6 +36,40 @@ const parseArgs = (text = '') => text.trim().split(/\s+/).slice(1)
 const DENY = (chatId) =>
   sendMessage(chatId, '⛔ Эта команда доступна только администратору.')
 
+/** Отформатировать список связок */
+function formatLinksList (links, showMessage = false) {
+  return links.map((l, i) => {
+    let line = `${i + 1}. 🔑 ${l.key}\n   🔗 ${l.url}`
+    if (showMessage && l.message) line += `\n   💬 ${l.message}`
+    return line
+  }).join('\n\n')
+}
+
+/** Построить клавиатуру с кнопками удаления для списка связок */
+function buildLinksKeyboard (links) {
+  const buttons = links.map(l => [
+    { type: 'callback', text: `🗑 ${l.key}`, data: `del:${l.key}` }
+  ])
+  buttons.push([{ type: 'callback', text: '🔙 Назад', data: 'back' }])
+  return buttons
+}
+
+/** Показать админское главное меню */
+async function showAdminMenu (chatId) {
+  const count = await getUserCount()
+  console.log('[API] showAdminMenu: показано меню для чата', chatId)
+  await sendMessageWithKeyboard(
+    chatId,
+    `👋 Привет, Админ! В базе ${count} пользователей.`,
+    [
+      [{ type: 'callback', text: '📋 Связки', data: 'links' },
+       { type: 'callback', text: '➕ Создать', data: 'create' }],
+      [{ type: 'callback', text: '👥 Пользователи', data: 'users' },
+       { type: 'callback', text: '📨 Рассылка', data: 'broadcast' }]
+    ]
+  )
+}
+
 // ── Обработчики событий ───────────────────────────────────────────────────────
 
 async function handleBotStarted (update) {
@@ -73,17 +107,7 @@ async function handleBotStarted (update) {
 
   // Обычный /start без payload
   if (isAdmin(user?.user_id)) {
-    const count = await getUserCount()
-    await sendMessageWithKeyboard(
-      chat_id,
-      `👋 Привет, Админ! В базе ${count} пользователей.`,
-      [
-        [{ type: 'callback', text: '📋 Связки', data: 'links' },
-         { type: 'callback', text: '➕ Создать', data: 'create' }],
-        [{ type: 'callback', text: '👥 Пользователи', data: 'users' },
-         { type: 'callback', text: '📨 Рассылка', data: 'broadcast' }]
-      ]
-    )
+    await showAdminMenu(chat_id)
   } else {
     await sendMessage(chat_id, '👋 Привет! Введи ключ, который тебе выдали, и я пришлю ссылку на канал.')
   }
@@ -156,26 +180,31 @@ async function handleMessage (update) {
     if (!key) return sendMessage(chat_id, '⚠️ Укажи ключ: /dellink <ключ>')
     const existing = await getLink(key)
     if (!existing) return sendMessage(chat_id, `❌ Ключ "${key}" не найден.`)
-    await delLink(key)
-    return sendMessage(chat_id, `🗑 Связка "${key}" удалена.`)
+    console.log('[API] /dellink: confirmation requested for key', key)
+    return sendMessageWithKeyboard(
+      chat_id,
+      `🗑 Удалить связку "${key}"?\n\n🔗 ${existing.url}\n\n💬 ${existing.message}`,
+      [
+        [
+          { type: 'callback', text: '✅ Да, удалить', data: `confirm_del:${key}` },
+          { type: 'callback', text: '❌ Нет', data: 'back' }
+        ]
+      ]
+    )
   }
 
   if (text.startsWith('/links')) {
     if (!isAdmin(userId)) return DENY(chat_id)
     const links = await getAllLinks()
     if (!links.length) {
-      return sendMessage(chat_id, '📭 Нет активных связок. Добавьте первую через /setlink.')
+      return sendMessageWithKeyboard(chat_id, '📭 Нет активных связок. Добавьте первую через /setlink.', [
+        [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+      ])
     }
-    const list = links.map((l, i) =>
-      `${i + 1}. 🔑 ${l.key}\n   🔗 ${l.url}\n   💬 ${l.message}`
-    ).join('\n\n')
-    const buttons = links.map(l => [
-      { type: 'callback', text: `🗑 ${l.key}`, data: `del:${l.key}` }
-    ])
     return sendMessageWithKeyboard(
       chat_id,
-      `📋 Активные связки (${links.length}):\n\n${list}`,
-      buttons
+      `📋 Активные связки (${links.length}):\n\n${formatLinksList(links, true)}`,
+      buildLinksKeyboard(links)
     )
   }
 
@@ -208,50 +237,73 @@ async function handleCallbackQuery (update) {
   if (cb.payload === 'links') {
     const links = await getAllLinks()
     if (!links.length) {
-      return sendMessage(chatId, '📭 Нет активных связок.')
+      return sendMessageWithKeyboard(chatId, '📭 Нет активных связок.', [
+        [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+      ])
     }
-    const list = links.map((l, i) =>
-      `${i + 1}. 🔑 ${l.key}\n   🔗 ${l.url}`
-    ).join('\n\n')
-    return sendMessage(chatId, `📋 Активные связки (${links.length}):\n\n${list}`)
+    return sendMessageWithKeyboard(
+      chatId,
+      `📋 Активные связки (${links.length}):\n\n${formatLinksList(links)}`,
+      buildLinksKeyboard(links)
+    )
   }
 
   if (cb.payload === 'create') {
-    return sendMessage(chatId,
+    return sendMessageWithKeyboard(chatId,
       '➕ Создание связки:\n\n' +
       '/setlink <ключ> <url> <сообщение>\n\n' +
-      'Пример:\n/setlink vip https://max.ru/channel/xxx Добро пожаловать! 🎉'
+      'Пример:\n/setlink vip https://max.ru/channel/xxx Добро пожаловать! 🎉',
+      [[{ type: 'callback', text: '🔙 Назад', data: 'back' }]]
     )
   }
 
   if (cb.payload === 'users') {
     const count = await getUserCount()
-    return sendMessage(chatId, `👥 В базе ${count} пользователей.`)
+    return sendMessageWithKeyboard(chatId, `👥 В базе ${count} пользователей.`, [
+      [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+    ])
   }
 
   if (cb.payload === 'broadcast') {
-    return sendMessage(chatId, '📨 Рассылка пока не реализована.')
+    return sendMessageWithKeyboard(chatId, '📨 Рассылка пока не реализована.', [
+      [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+    ])
   }
 
-  if (cb.payload === 'cancel_del') {
-    return sendMessage(chatId, '❌ Удаление отменено.')
+  if (cb.payload === 'back') {
+    console.log('[API] callback: back → главное меню')
+    return showAdminMenu(chatId)
   }
 
   if (cb.payload.startsWith('del:')) {
     const key = cb.payload.slice(4)
     const existing = await getLink(key)
     if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
-    await delLink(key)
-    return sendMessage(chatId, `🗑 Связка "${key}" удалена.`)
+    console.log('[API] del: confirmation requested for key', key)
+    return sendMessageWithKeyboard(
+      chatId,
+      `🗑 Удалить связку "${key}"?\n\n🔗 ${existing.url}\n\n💬 ${existing.message}`,
+      [
+        [
+          { type: 'callback', text: '✅ Да, удалить', data: `confirm_del:${key}` },
+          { type: 'callback', text: '❌ Нет', data: 'links' }
+        ]
+      ]
+    )
   }
 
   if (cb.payload.startsWith('confirm_del:')) {
-    const key = cb.payload.slice(11)
-    return handleCallbackQuery({
-      message: update.message,
-      callback: { ...cb, payload: `del:${key}` }
-    })
+    const key = cb.payload.slice('confirm_del:'.length)
+    const existing = await getLink(key)
+    if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
+    console.log('[API] confirm_del: deleted key', key)
+    await delLink(key)
+    return sendMessageWithKeyboard(chatId, `🗑 Связка "${key}" удалена.`, [
+      [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+    ])
   }
+
+  console.warn('[API] handleCallbackQuery: неизвестный payload', cb.payload)
 }
 
 // ── Маршруты Hono ─────────────────────────────────────────────────────────────
