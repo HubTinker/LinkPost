@@ -10,7 +10,7 @@ import { Hono } from 'hono'
 import { handle } from 'hono/vercel'
 import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead } from '../lib/max-api.js'
 import {
-  setLink, getLink, delLink, getAllLinks,
+  setLink, getLink, delLink, getAllLinks, getLinksByCreator,
   saveUser, getUserCount, reactivateUser
 } from '../lib/storage.js'
 
@@ -37,10 +37,11 @@ const DENY = (chatId) =>
   sendMessage(chatId, '⛔ Эта команда доступна только администратору.')
 
 /** Отформатировать список связок */
-function formatLinksList (links, showMessage = false) {
+function formatLinksList (links, showCreator = false) {
   return links.map((l, i) => {
     let line = `${i + 1}. 🔑 ${l.key}\n   🔗 ${l.url}`
-    if (showMessage && l.message) line += `\n   💬 ${l.message}`
+    if (l.message) line += `\n   💬 ${l.message}`
+    if (showCreator && l.creator_id != null) line += `\n   👤 Создатель: ID=${l.creator_id}`
     return line
   }).join('\n\n')
 }
@@ -163,7 +164,9 @@ async function handleMessage (update) {
       return sendMessage(chat_id, '⚠️ URL слишком длинный (максимум 2048 символов).')
     }
     const msg = rest.join(' ').slice(0, 4096)
-    await setLink(key, url, msg)
+    console.log('[API] /setlink: key=%s, url=%s, creator=%d', key, url, userId)
+    await setLink(key, url, msg, userId)
+    console.log('[API] /setlink: saved successfully')
     return sendMessage(
       chat_id,
       '✅ Связка сохранена!\n\n' +
@@ -175,12 +178,16 @@ async function handleMessage (update) {
   }
 
   if (text.startsWith('/dellink')) {
-    if (!isAdmin(userId)) return DENY(chat_id)
     const [key] = parseArgs(text)
     if (!key) return sendMessage(chat_id, '⚠️ Укажи ключ: /dellink <ключ>')
     const existing = await getLink(key)
     if (!existing) return sendMessage(chat_id, `❌ Ключ "${key}" не найден.`)
-    console.log('[API] /dellink: confirmation requested for key', key)
+    const isAdminUser = isAdmin(userId)
+    if (!isAdminUser && existing.creator_id !== userId) {
+      console.log('[API] /dellink: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
+      return sendMessage(chat_id, '⛔ Вы можете удалять только свои ключи.')
+    }
+    console.log('[API] /dellink: confirmed for key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
     return sendMessageWithKeyboard(
       chat_id,
       `🗑 Удалить связку "${key}"?\n\n🔗 ${existing.url}\n\n💬 ${existing.message}`,
@@ -194,17 +201,24 @@ async function handleMessage (update) {
   }
 
   if (text.startsWith('/links')) {
-    if (!isAdmin(userId)) return DENY(chat_id)
-    const links = await getAllLinks()
+    const isAdminUser = isAdmin(userId)
+    const links = isAdminUser ? await getAllLinks() : await getLinksByCreator(userId)
+    console.log('[API] /links: userId=%d, isAdmin=%s, found=%d links', userId, isAdminUser, links.length)
     if (!links.length) {
       return sendMessageWithKeyboard(chat_id, '📭 Нет активных связок. Добавьте первую через /setlink.', [
         [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
       ])
     }
-    return sendMessageWithKeyboard(
+    if (isAdminUser) {
+      return sendMessageWithKeyboard(
+        chat_id,
+        `📋 Активные связки (${links.length}):\n\n${formatLinksList(links, true)}`,
+        buildLinksKeyboard(links)
+      )
+    }
+    return sendMessage(
       chat_id,
-      `📋 Активные связки (${links.length}):\n\n${formatLinksList(links, true)}`,
-      buildLinksKeyboard(links)
+      `📋 Ваши связки (${links.length}):\n\n${formatLinksList(links, false)}`
     )
   }
 
@@ -243,7 +257,7 @@ async function handleCallbackQuery (update) {
     }
     return sendMessageWithKeyboard(
       chatId,
-      `📋 Активные связки (${links.length}):\n\n${formatLinksList(links)}`,
+      `📋 Активные связки (${links.length}):\n\n${formatLinksList(links, true)}`,
       buildLinksKeyboard(links)
     )
   }
@@ -279,7 +293,11 @@ async function handleCallbackQuery (update) {
     const key = cb.payload.slice(4)
     const existing = await getLink(key)
     if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
-    console.log('[API] del: confirmation requested for key', key)
+    if (existing.creator_id !== userId) {
+      console.log('[API] del: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
+      return sendMessage(chatId, '⛔ Вы можете удалять только свои ключи.')
+    }
+    console.log('[API] del: confirmation requested for key=%s, userId=%d', key, userId)
     return sendMessageWithKeyboard(
       chatId,
       `🗑 Удалить связку "${key}"?\n\n🔗 ${existing.url}\n\n💬 ${existing.message}`,
@@ -296,7 +314,11 @@ async function handleCallbackQuery (update) {
     const key = cb.payload.slice('confirm_del:'.length)
     const existing = await getLink(key)
     if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
-    console.log('[API] confirm_del: deleted key', key)
+    if (existing.creator_id !== userId) {
+      console.log('[API] confirm_del: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
+      return sendMessage(chatId, '⛔ Вы можете удалять только свои ключи.')
+    }
+    console.log('[API] confirm_del: deleted key=%s by userId=%d', key, userId)
     await delLink(key)
     return sendMessageWithKeyboard(chatId, `🗑 Связка "${key}" удалена.`, [
       [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
