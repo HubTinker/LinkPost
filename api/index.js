@@ -461,6 +461,102 @@ app.get('/debug-certs', async (c) => {
     }))
   })
 })
+app.get('/check-migration-raw', async (c) => {
+  const secret = c.req.query('secret')
+  if (secret !== process.env.SETUP_SECRET) return c.json({ error: 'Forbidden' }, 403)
+
+  const tls = await import('node:tls')
+  const fs = await import('node:fs')
+  const results = {}
+
+  // Test 1: rejectUnauthorized: false
+  try {
+    const socket1 = tls.connect({ host: 'platform-api2.max.ru', port: 443, rejectUnauthorized: false })
+    await new Promise((resolve, reject) => {
+      socket1.on('secureConnect', () => {
+        const cert = socket1.getPeerCertificate()
+        results.test1_no_verify = {
+          success: true,
+          authorized: socket1.authorized,
+          cipher: socket1.getCipher(),
+          certSubject: cert.subject
+        }
+        socket1.end()
+        resolve()
+      })
+      socket1.on('error', (e) => {
+        results.test1_no_verify = { success: false, error: e.message }
+        resolve()
+      })
+    })
+  } catch (e) {
+    results.test1_no_verify = { success: false, error: e.message }
+  }
+
+  // Test 2: with CA but no servername
+  try {
+    const extraPem = fs.readFileSync('certs/mincifra-chain.pem').toString()
+    const extraCerts = extraPem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) || []
+    const allCAs = [...tls.rootCertificates, ...extraCerts]
+
+    const socket2 = tls.connect({
+      host: 'platform-api2.max.ru',
+      port: 443,
+      ca: allCAs
+    })
+    await new Promise((resolve, reject) => {
+      socket2.on('secureConnect', () => {
+        results.test2_with_ca = {
+          success: true,
+          authorized: socket2.authorized,
+          authorizationError: socket2.authorizationError
+        }
+        socket2.end()
+        resolve()
+      })
+      socket2.on('error', (e) => {
+        results.test2_with_ca = { success: false, error: e.message }
+        resolve()
+      })
+    })
+  } catch (e) {
+    results.test2_with_ca = { success: false, error: e.message }
+  }
+
+  // Test 3: with CA + custom checkServerIdentity
+  try {
+    const extraPem = fs.readFileSync('certs/mincifra-chain.pem').toString()
+    const extraCerts = extraPem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) || []
+    const allCAs = [...tls.rootCertificates, ...extraCerts]
+
+    const socket3 = tls.connect({
+      host: 'platform-api2.max.ru',
+      port: 443,
+      ca: allCAs,
+      checkServerIdentity: () => undefined
+    })
+    await new Promise((resolve, reject) => {
+      socket3.on('secureConnect', () => {
+        results.test3_skip_identity = {
+          success: true,
+          authorized: socket3.authorized,
+          authorizationError: socket3.authorizationError
+        }
+        socket3.end()
+        resolve()
+      })
+      socket3.on('error', (e) => {
+        results.test3_skip_identity = { success: false, error: e.message }
+        resolve()
+      })
+    })
+  } catch (e) {
+    results.test3_skip_identity = { success: false, error: e.message }
+  }
+
+  return c.json(results)
+})
+
 app.get('/check-migration', async (c) => {
   const secret = c.req.query('secret')
   if (secret !== process.env.SETUP_SECRET) {
