@@ -369,7 +369,7 @@ app.post('/webhook', async (c) => {
   }
 
   const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
-  if (!checkRate(ip)) {
+  if (!await checkRate(ip)) {
     return c.json({ error: 'Too Many Requests' }, 429)
   }
   let update
