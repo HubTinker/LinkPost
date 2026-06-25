@@ -44,23 +44,28 @@ async function migrate () {
   let skipped = 0
 
   for (const key of allKeys) {
-    const existing = await kv.get(`link:${key}`)
-    if (!existing) {
-      log('WARN', `link:${key} not found in KV, skipping`)
-      skipped++
-      continue
-    }
+    try {
+      const existing = await kv.get(`link:${key}`)
+      if (!existing) {
+        log('WARN', `link:${key} not found in KV, skipping`)
+        skipped++
+        continue
+      }
 
-    if (existing.creator_id != null) {
-      log('DEBUG', `link:${key} already has creator_id=${existing.creator_id}, skipping`)
-      skipped++
-      continue
-    }
+      if (existing.creator_id != null) {
+        log('DEBUG', `link:${key} already has creator_id=${existing.creator_id}, skipping`)
+        skipped++
+        continue
+      }
 
-    log('DEBUG', `migrating link:${key} → creator_id=${fallbackOwner}`)
-    await kv.set(`link:${key}`, { ...existing, creator_id: fallbackOwner })
-    await kv.sadd(`user_links:${fallbackOwner}`, key)
-    migrated++
+      log('DEBUG', `migrating link:${key} → creator_id=${fallbackOwner}`)
+      await kv.set(`link:${key}`, { ...existing, creator_id: fallbackOwner })
+      await kv.sadd(`user_links:${fallbackOwner}`, key)
+      migrated++
+    } catch (err) {
+      log('ERROR', `Failed to migrate link:${key}: ${err.message}`)
+      skipped++
+    }
   }
 
   log('INFO', `Done: migrated=${migrated}, skipped=${skipped}`)

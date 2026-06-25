@@ -36,6 +36,7 @@ async function backup () {
     links_all: await kv.smembers('links_all'),
     links: {},
     link_subs: {},
+    user_links: {},
     users_all: await kv.smembers('users_all'),
     users: {}
   }
@@ -51,6 +52,14 @@ async function backup () {
     log('DEBUG', `link:${key} → ${JSON.stringify(dump.links[key])} (${subs.length} subs)`)
   }
 
+  const allUsers = dump.users_all
+  for (const id of allUsers) {
+    const userLinks = await kv.smembers(`user_links:${id}`)
+    if (userLinks.length) {
+      dump.user_links[id] = userLinks
+    }
+  }
+
   log('DEBUG', `users_all: ${dump.users_all.length} ids`)
 
   for (const id of dump.users_all) {
@@ -64,9 +73,10 @@ async function backup () {
   const stats = {
     links: Object.keys(dump.links).length,
     users: Object.keys(dump.users).length,
-    subs: Object.keys(dump.link_subs).length
+    subs: Object.keys(dump.link_subs).length,
+    user_links: Object.keys(dump.user_links).length
   }
-  log('INFO', `Done: ${stats.links} links, ${stats.users} users, ${stats.subs} subscription sets`)
+  log('INFO', `Done: ${stats.links} links, ${stats.users} users, ${stats.subs} subscription sets, ${stats.user_links} user_links sets`)
   log('INFO', `Saved to ${filename}`)
 }
 
