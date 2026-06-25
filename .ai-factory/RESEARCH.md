@@ -5,25 +5,31 @@ Status: active
 
 ## Active Summary (input for /aif-plan)
 <!-- aif:active-summary:start -->
-Topic: Проверка реализации всех запланированных функций LinkPost
-Goal: Сверить функционал из DESCRIPTION.md с actual code, выявить расхождения и проблемные места
+Topic: Добавление владельца (creator) к связкам ключ-ссылка
+Goal: Сохранять creator_id при создании ключа, фильтровать ключи по создателю, подготовить базу к multi-user сценарию
 Constraints:
-  - Ни одного планового файла не существует (ROADMAP.md, plans/*)
-  - DESCRIPTION.md — единственный источник "что запланировано"
+  - Не потерять существующих подписанных пользователей (users_all, user:*)
+  - Бекап всей KV-базы перед миграцией
 Decisions:
-  - Все 6 функций из DESCRIPTION.md реализованы полностью
-  - Приоритет на исправление: kv-mock.js (файл отсутствует -> краш при локальном запуске)
-  - [FIX] логи — остатки отладки, почистить перед деплоем
-  - Тесты нужно расширять на бизнес-логику
+  - creator_id добавляется в value link:<key> → { url, message, creator_id }
+  - setLink(key, url, msg, creatorId) — новый параметр
+  - getLinksByCreator(userId) — новый метод
+  - Индекс user_links:<userId> (set) создаётся сразу при setLink
+  - Миграция: ключи без creator_id → назначить первому админу из ADMIN_IDS
+  - Права: админы видят/удаляют всё, создатели — только свои ключи
+  - Роли в будущем уйдут в KV (не только ADMIN_IDS env), но в рамках этой задачи isAdmin() остаётся
+  - /links для админов: все ключи (с пометкой создателя); для пользователей: только user_links:<userId>
+  - /dellink: админ может удалить любой; пользователь — только свой (проверка creator_id)
 Open questions:
-  - Нужен ли kv-mock.js для локальной разработки? Или перейти на @vercel/kv всегда?
-  - Стоит ли заменить KV.keys('link:*') на отдельный set для обратной совместимости?
+  - Формат бекапа: прямой дамп всех ключей через @vercel/kv или сторонний инструмент?
+  - Нужна ли обратная совместимость getLink() (без фильтра по creator — для deep-link резолвинга)?
 Success signals:
-  - kv-mock.js создан или удалён conditional import
-  - [FIX] логи убраны из production-кода
-  - Тесты покрывают handleBotStarted, handleMessage с командами
-  - npm test проходит без ошибок
-Next step: Устранить критические проблемы (kv-mock.js, [FIX] логи), затем расширить тесты
+  - Бекап базы сохранён перед миграцией
+  - setLink принимает и сохраняет creator_id
+  - Миграция существующих ключей без потерь
+  - /links показывает админу все ключи с creator, пользователю — только свои
+  - Индекс user_links:<userId> наполняется корректно
+Next step: /aif-plan fast для реализации изменений в lib/storage.js и api/index.js
 <!-- aif:active-summary:end -->
 
 ## Sessions
