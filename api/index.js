@@ -590,7 +590,6 @@ app.get('/check-migration', async (c) => {
       const socket = tls.connect({
         host: u.hostname,
         port: u.port || 443,
-        servername: u.hostname,
         ca: combinedCAs
       }, () => {
         socket.write(`GET ${u.pathname}${u.search} HTTP/1.1\r\n`)
