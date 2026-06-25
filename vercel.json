@@ -5,7 +5,7 @@
       "src": "api/index.js",
       "use": "@vercel/node",
       "config": {
-        "runtime": "edge"
+        "runtime": "nodejs20.x"
       }
     }
   ],
