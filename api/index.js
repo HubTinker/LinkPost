@@ -421,17 +421,22 @@ app.get('/check-migration', async (c) => {
   const results = {}
   const BOT_TOKEN = process.env.BOT_TOKEN
 
-  // Используем https.request с CA (как lib/max-api.js)
+  // Используем https.request с комбинированными CA
   const https = await import('node:https')
+  const tls = await import('node:tls')
   const fs = await import('node:fs')
-  let ca = null
+  let combinedCAs = null
+  let hasCertFile = false
   try {
-    ca = fs.readFileSync('certs/mincifra-chain.pem')
+    const extra = fs.readFileSync('certs/mincifra-chain.pem').toString()
+    combinedCAs = [...tls.rootCertificates, extra]
+    hasCertFile = true
   } catch {}
 
   results.env = {
     NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS || null,
-    has_cert_file: !!ca
+    has_cert_file: hasCertFile,
+    ca_count: combinedCAs ? combinedCAs.length : 0
   }
 
   function fetchWithCA (url) {
@@ -443,7 +448,7 @@ app.get('/check-migration', async (c) => {
         path: u.pathname + u.search,
         method: 'GET',
         headers: { Authorization: BOT_TOKEN },
-        ca: ca || undefined
+        ca: combinedCAs || undefined
       }
       const req = https.request(options, (res) => {
         let data = ''
