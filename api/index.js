@@ -411,7 +411,56 @@ app.get('/debug/:key', async (c) => {
   })
 })
 
-/** Проверка совместимости с новым API — TLS из Edge Runtime */
+/** Захват цепочки сертификатов с platform-api2 */
+app.get('/debug-certs', async (c) => {
+  const secret = c.req.query('secret')
+  if (secret !== process.env.SETUP_SECRET) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  const tls = await import('node:tls')
+  const chain = await new Promise((resolve, reject) => {
+    const socket = tls.connect({
+      host: 'platform-api2.max.ru',
+      port: 443,
+      rejectUnauthorized: false
+    }, () => {
+      const cert = socket.getPeerCertificate(true)
+      const chain = []
+      let c = cert
+      while (c) {
+        chain.push({
+          subject: c.subject,
+          issuer: c.issuer,
+          fingerprint: c.fingerprint,
+          serialNumber: c.serialNumber,
+          valid_from: c.valid_from,
+          valid_to: c.valid_to,
+          pem: c.raw ? '-----BEGIN CERTIFICATE-----\n' + c.raw.toString('base64').match(/.{1,64}/g).join('\n') + '\n-----END CERTIFICATE-----' : null
+        })
+        c = c.issuerCertificate && c.fingerprint !== c.issuerCertificate.fingerprint ? c.issuerCertificate : null
+      }
+      resolve(chain)
+      socket.end()
+    })
+    socket.on('error', reject)
+  })
+
+  return c.json({
+    host: 'platform-api2.max.ru',
+    chainLength: chain.length,
+    chain: chain.map((c, i) => ({
+      index: i,
+      subject: c.subject,
+      issuer: c.issuer,
+      fingerprint: c.fingerprint,
+      serialNumber: c.serialNumber,
+      valid_from: c.valid_from,
+      valid_to: c.valid_to,
+      pem: c.pem
+    }))
+  })
+})
 app.get('/check-migration', async (c) => {
   const secret = c.req.query('secret')
   if (secret !== process.env.SETUP_SECRET) {
