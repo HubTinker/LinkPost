@@ -1,8 +1,7 @@
-# План: cleanup — исправление проблем, найденных в аудите
+# План: Статистика — first_seen, created_at, счётчики по дням
 
-**Branch:** нет (git disabled)
-**Created:** 2026-06-07
-**Type:** fix / refactor
+**Created:** 2026-06-25
+**Type:** feature
 
 ## Settings
 
@@ -14,127 +13,245 @@
 
 ## Research Context
 
-Проверка реализации всех запланированных функций LinkPost. Все 6 функций из DESCRIPTION.md реализованы полностью. Основные проблемы: отсутствует kv-mock.js (краш при локальном запуске), 6 остаточных [FIX] логов, нет тестов на бизнес-логику. Подробнее — `.ai-factory/RESEARCH.md`.
+**Тема:** Добавление аналитики новых пользователей в разрезе ключей и по дням.
+
+**Что нужно:**
+- `created_at` на связке — когда создана, возраст ключа
+- `first_seen` на пользователе — когда впервые пришёл (хранить, не показывать списком)
+- Счётчики по дням: `stats:new:<key>:<YYYY-MM-DD>` и `stats:new:total:<YYYY-MM-DD>`
+- TTL 90 дней на все stats:* ключи
+- Команда `/stats <key>` — всего, сегодня, вчера, за неделю, возраст ключа
+- Кнопка «Статистика» в админ-меню
+
+**Не делаем:**
+- Сравнение ключей между собой (топ за неделю)
+- first_seen НЕ показываем списком — только для расчёта «новых за период»
 
 ## Задачи
 
-### ~~Задача 1: Создать lib/kv-mock.js~~ ✅
+### 1. created_at в setLink
 
-**Description:** Реализовать in-memory заглушку для Vercel KV, чтобы бот работал локально без подключения к Redis.
+**Description:** Добавить `created_at: Date.now()` в объект, сохраняемый в `setLink`.
 
-**Files:** `lib/kv-mock.js` (новый)
-
-**Interface — методы:**
-- `get(key)` — возвращает значение или `null`
-- `set(key, value)` — сохраняет в Map
-- `del(key)` — удаляет ключ
-- `keys(pattern)` — возвращает ключи по glob-паттерну (`link:*`)
-- `sadd(set, member)` — добавляет элемент в Set
-- `smembers(set)` — возвращает все элементы Set
-- `scard(set)` — возвращает размер Set
-
-**Implementation notes:**
-- Хранить данные в `Map` и отдельном `Map` для sets
-- `keys(pattern)` поддерживает только `*` на конце (как в коде `link:*`)
-- Экспортировать как `{ kv }` — совместимо с интерфейсом `@vercel/kv`
-- Добавить логи через `console.log` с префиксом `[KV-MOCK]` для visibility
-
-**Logging:**
-- `console.log('[KV-MOCK] set', key)` — при создании/обновлении
-- `console.log('[KV-MOCK] get', key, '→', result ? 'found' : 'miss')` — при чтении
-- `console.log('[KV-MOCK] keys', pattern, '→', count)` — при поиске
-
-**Definition of done:**
-- Файл создан
-- `node -e "import('./lib/kv-mock.js')"` не выдаёт ошибок
-
-### ~~Задача 2: Удалить [FIX] префиксы из production-логов~~ ✅
-
-**Description:** Все `console.*` c `[FIX]` заменить на нормальные сообщения. Это остатки отладки после фикса undefined chat_id.
-
-**Files:**
-- `api/index.js:95`
-- `lib/max-api.js:11,20,24,30,41`
+**Files:** `lib/storage.js`
 
 **Changes:**
+- `setLink(key, url, message, creatorId)`: в `kv.set` добавить поле `created_at: Date.now()`
+- Обновить `log('DEBUG', ...)` — включить `created_at` в сообщение
 
-| File | Line | Old | New |
-|------|------|-----|-----|
-| `api/index.js` | 95 | `console.warn('[FIX] handleMessage: chat_id отсутствует, пропускаем')` | `console.warn('handleMessage: chat_id отсутствует, пропускаем')` |
-| `lib/max-api.js` | 11 | `console.log('[FIX] API request', ...)` | `console.log('[API] request', method, path, JSON.stringify(body))` |
-| `lib/max-api.js` | 20 | `console.error('[FIX] API error', ...)` | `console.error('[API] error', res.status, err)` |
-| `lib/max-api.js` | 24 | `console.log('[FIX] API success', path)` | `console.log('[API] success', path)` |
-| `lib/max-api.js` | 30 | `console.error('[FIX] sendMessage: chatId is required')` | `console.error('[API] sendMessage: chatId is required')` |
-| `lib/max-api.js` | 41 | `console.error('[FIX] sendMessageWithLink: chatId is required')` | `console.error('[API] sendMessageWithLink: chatId is required')` |
+**Logging:**
+- `DEBUG: setLink: key=<k>, url=<u>, creator=<c>, created_at=<ts>`
 
-**Definition of done:**
-- В коде не осталось ни одного `[FIX]` (кроме `.ai-factory/patches/` — это архив)
-- `rg "\[FIX\]" --include "*.js"` не находит совпадений
+### 2. first_seen в saveUser
 
-### ~~Задача 3: Добавить тесты на бизнес-логику~~ ✅
+**Description:** Записывать `first_seen` только при ПЕРВОМ сохранении пользователя. При первом появлении — инкрементить `stats:new:total:<today>`.
 
-**Dependency:** Задача 1 (kv-mock.js нужен для импорта storage.js в тестах)
+**Files:** `lib/storage.js`
 
-**Files:** `test/handler.test.js` (расширение)
+**Changes:**
+- Перед `kv.set` проверить `await kv.get(\`${USER_PREFIX}${user_id}\`)`
+- Если записи нет → добавить `first_seen: Date.now()` в объект + INCR `stats:new:total:<YYYY-MM-DD>`
+- Если запись есть → не трогать `first_seen` (сохраняется из существующей записи)
+- Добавить хелпер `formatDate(d = new Date())` → `"YYYY-MM-DD"` (понадобится дальше)
 
-**Test cases:**
+**Логика saveUser после изменений:**
+```
+existing = await kv.get(user:<id>)
+isNew = !existing
+first_seen = isNew ? Date.now() : existing.first_seen
+await kv.set(user:<id>, { ..., first_seen, updated_at: Date.now() })
+if (isNew) await incrDailyTotal(formatDate())
+if (subscribedKey) await addUserToLink(subscribedKey, user_id)
+```
 
-1. **handleBotStarted без payload (админ)**
-   - `user.user_id = 123` (из ADMIN_USER_IDS)
-   - Должна вернуться панель с командами
+**Logging:**
+- `DEBUG: saveUser: userId=<id>, isNew=<bool>, subscribedKey=<key>`
 
-2. **handleBotStarted без payload (не админ)**
-   - `user.user_id = 999`
-   - Должно прийти приветствие для обычного пользователя
+### 3. addUserToLink + ежедневные счётчики ключей
 
-3. **handleMessage с /setlink (админ)**
-   - text = `/setlink test https://example.com Hello!`
-   - Должен вызвать `setLink` с правильными аргументами
+**Description:** `addUserToLink` возвращает результат `sadd`. Если пользователь НОВЫЙ для этого ключа — инкрементить `stats:new:<key>:<today>`. Добавить функции incr/get для stats-ключей с TTL 90 дней.
 
-4. **handleMessage с /setlink (не админ)**
-   - `user.user_id = 999`
-   - Должен получить отказ (DENY)
+**Files:** `lib/storage.js`
 
-5. **handleMessage с /dellink (админ, существующий ключ)**
-   - text = `/dellink test`
-   - Должен удалить ключ
+**Changes в addUserToLink:**
+- `const added = await kv.sadd(...)` → возвращать `added` (1 — новый, 0 — уже был)
+- Если `added === 1` → `await incrDailyStat(key, formatDate())`
 
-6. **handleMessage с /dellink (админ, несуществующий ключ)**
-   - text = `/dellink nonexistent`
-   - Должен сообщить, что ключ не найден
+**Новые функции (все экспортируемые):**
+```js
+STATS_PREFIX = 'stats:new:'
+STATS_TOTAL = 'stats:new:total'
+STATS_TTL = 90 * 24 * 60 * 60  // 90 дней в секундах
 
-7. **handleMessage с /links (админ)**
-   - Должен вернуть список связок
+async function incrDailyStat(key, date)    // INCR stats:new:<key>:<date> + EXPIRE
+async function incrDailyTotal(date)        // INCR stats:new:total:<date> + EXPIRE
+async function getDailyStat(key, date)     // GET → Number, default 0
+async function getDailyTotal(date)         // GET → Number, default 0
+async function getStatRange(key, from, to)  // [{date, count}, ...] за диапазон
+async function getTotalRange(from, to)      // [{date, count}, ...] за диапазон
+```
 
-8. **handleMessage с /users (админ)**
-   - Должен вернуть количество пользователей
+**TTL:** Каждый вызов INCR также вызывает `kv.expire(key, STATS_TTL)`. Это продлевает жизнь ключа на 90 дней от последней активности.
 
-9. **handleMessage с вводом ключа (существующий)**
-   - text = существующий ключ
-   - Должен вызвать `sendMessageWithLink`
+**Logging:**
+- `DEBUG: incrDailyStat: key=<k>, date=<d>`
 
-10. **handleMessage с вводом ключа (несуществующий)**
-    - text = несуществующий ключ
-    - Должен вернуть "Ключ не найден"
+### 4. Функции чтения статистики
+
+**Description:** Добавить `getLinkSubCount(key)` и `getLinkAge(key)` — простые обёртки для формирования ответа `/stats`.
+
+**Files:** `lib/storage.js`
+
+**Функции:**
+```js
+export async function getLinkSubCount(key)  // SCARD link_subs:<key>
+export async function getLinkAge(key)       // days since link:<key>.created_at
+```
+
+**getLinkAge:**
+- Читает `link:<key>`, извлекает `created_at`
+- Если поля нет → возвращает `null`
+- Иначе → `Math.floor((Date.now() - created_at) / 86400000)` (дней)
+
+**Logging:**
+- `DEBUG: getLinkAge: key=<k>, age=<n> days`
+
+### 5. incr в kv-mock.js
+
+**Description:** Добавить методы `incr` и `expire` в `lib/kv-mock.js` для поддержки тестов.
+
+**Files:** `lib/kv-mock.js`
+
+**Методы:**
+```js
+async incr(key) {
+  const val = store.has(key) ? Number(store.get(key)) : 0
+  const next = val + 1
+  store.set(key, next)
+  console.log('[KV-MOCK] incr', key, '\u2192', next)
+  return next
+},
+async expire(key, seconds) {
+  // no-op: мок не эмулирует истечение ключей
+  console.log('[KV-MOCK] expire', key, seconds + 's')
+}
+```
+
+**Logging:** стандартный `[KV-MOCK]` префикс.
+
+### 6. Команда /stats для админа
+
+**Description:** Добавить обработчик `/stats <key>` в `handleMessage`. Показывает полную статистику по ключу.
+
+**Files:** `api/index.js`
+
+**Импорты (добавить):**
+```js
+import { getLinkSubCount, getLinkAge, getDailyStat, getDailyTotal } from '../lib/storage.js'
+```
+
+**Логика:**
+1. Проверить `isAdmin(userId)` → нет: DENY
+2. Распарсить `[key]` из `parseArgs(text)`
+3. Если нет ключа → `⚠️ Формат: /stats <ключ>`
+4. `getLink(key)` → если нет: `❌ Ключ не найден`
+5. Собрать данные:
+   - `total = await getLinkSubCount(key)`
+   - `today = await getDailyStat(key, formatDate())`
+   - `yesterday = await getDailyStat(key, formatDate(d - 86400000))`
+   - `week = sum(await getStatRange(key, weekAgo, today))`
+   - `age = await getLinkAge(key)`
+6. Формат ответа:
+```
+📊 Статистика ключа «<key>»
+
+👥 Всего: <total>
+📅 Сегодня: +<today>
+📆 Вчера: +<yesterday>
+📈 За неделю: +<week>
+🕐 Возраст ключа: <age> дн.
+🔗 <url>
+```
+
+**Logging:**
+- `console.log('[API] /stats: key=%s, total=%d, today=%d, week=%d', key, total, today, week)`
+
+### 7. Кнопка «Статистика» в админ-меню
+
+**Description:** Добавить кнопку и callback-обработчик для показа общей статистики системы.
+
+**Files:** `api/index.js`
+
+**Изменения:**
+- `showAdminMenu`: добавить кнопку `{ type: 'callback', text: '📊 Статистика', data: 'stats' }` в клавиатуру
+- `handleCallbackQuery`: добавить обработчик `cb.payload === 'stats'`
+
+**Общая статистика (без ключа):**
+```
+📊 Общая статистика
+
+👥 Всего пользователей: <total_users>
+📅 Новых сегодня: +<today_total>
+📆 Новых вчера: +<yesterday_total>
+📈 Новых за неделю: +<week_total>
+🔑 Активных связок: <links_count>
+```
+
+Плюс кнопка `🔙 Назад`.
+
+**Logging:**
+- `console.log('[API] callback: stats → общая статистика')`
+
+### 8. Unit-тесты
+
+**Description:** Добавить тесты для всех новых функций хранилища и команды `/stats`.
+
+**Files:** `test/storage.test.js` (расширение), `test/handler.test.js` (расширение)
+
+**Тесты storage (новый describe-блок):**
+
+1. **setLink сохраняет created_at**
+2. **getLinkAge возвращает 0 для только что созданного ключа**
+3. **getLinkAge возвращает null для ключа без created_at**
+4. **saveUser устанавливает first_seen новому пользователю**
+5. **saveUser НЕ перезаписывает first_seen существующему**
+6. **saveUser инкрементит stats:new:total:<today> для нового**
+7. **saveUser НЕ инкрементит total для существующего**
+8. **addUserToLink возвращает 1 для нового подписчика**
+9. **addUserToLink возвращает 0 для уже подписанного**
+10. **addUserToLink инкрементит stats:new:<key>:<today> для нового**
+11. **getDailyStat возвращает 0 для несуществующей даты**
+12. **incrDailyStat + getDailyStat — круговая проверка**
+13. **getStatRange возвращает корректный диапазон**
+14. **getLinkSubCount возвращает размер set**
+
+**Тесты API (новый describe-блок):**
+
+1. **/stats для админа с существующим ключом — показывает статистику**
+2. **/stats для не-админа — DENY**
+3. **/stats без аргументов — подсказка формата**
+4. **/stats с несуществующим ключом — «не найден»**
+5. **callback 'stats' показывает общую статистику**
 
 **Implementation notes:**
-- Перед каждым тестом сбрасывать mock-хранилище в чистое состояние
-- Использовать `beforeEach` для очистки
-- Проверять через assert вызовы `sendMessage`/`sendMessageWithLink` (через mock fetch)
+- Все тесты используют `kv._clear()` в `beforeEach`
+- Для мока `Date.now()` использовать фиксированную дату (через `kv.set` напрямую для created_at/first_seen)
+- `formatDate` импортировать из storage.js или вычислять локально
 
-**Definition of done:**
-- `npm test` проходит все тесты (старые + новые)
-- Покрыты ключевые сценарии: админ/не админ, команды, ввод ключа, диплинк
+**Logging:** тесты логи не проверяют — только assert на значения.
 
 ## Commit Plan
 
-Менее 5 задач — единый коммит после выполнения всех задач.
+3 коммита:
 
-**Предлагаемый message:** `fix: add kv-mock.js, cleanup [FIX] logs, expand test coverage`
+| # | Коммит | Задачи | Сообщение |
+|---|--------|--------|-----------|
+| 1 | Storage | 1–5 | `feat(storage): add created_at, first_seen, daily stats counters` |
+| 2 | API | 6–7 | `feat(api): add /stats command and admin menu button` |
+| 3 | Tests | 8 | `test: add unit tests for stats storage and /stats command` |
 
 ## Проверка
 
 После выполнения всех задач:
-1. `npm test` — без ошибок
-2. `rg "\[FIX\]" --include "*.js"` — пусто
-3. `node -e "import('./lib/storage.js')"` — без ошибок (kv-mock.js подхватывается)
+1. `npm test` — все тесты (старые + новые) проходят без ошибок
+2. `rg "getLinkAge\|getLinkSubCount\|incrDailyStat\|getDailyStat" --include "*.js"` — все функции используются

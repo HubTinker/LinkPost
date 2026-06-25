@@ -11,7 +11,7 @@ import { handle } from 'hono/vercel'
 import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead } from '../lib/max-api.js'
 import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
-  saveUser, getUserCount, reactivateUser
+  saveUser, getUserCount, reactivateUser, getKv
 } from '../lib/storage.js'
 
 export const config = { runtime: 'edge' }
@@ -163,10 +163,9 @@ async function handleMessage (update) {
         'Пример:\n/setlink vip https://max.ru/channel/xxx Добро пожаловать! 🎉'
       )
     }
-    let parsedUrl
     try {
-      parsedUrl = new URL(url)
-      if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('bad protocol')
+      const u = new URL(url)
+      if (!['http:', 'https:'].includes(u.protocol)) throw new Error()
     } catch {
       return sendMessage(chat_id, '⚠️ URL должен быть валидным и начинаться с http:// или https://')
     }
@@ -341,21 +340,19 @@ async function handleCallbackQuery (update) {
   console.warn('[API] handleCallbackQuery: неизвестный payload', cb.payload)
 }
 
-// ── Rate Limiter ──────────────────────────────────────────────────────────────
+// ── Rate Limiter (Vercel KV) ─────────────────────────────────────────────────
 
-const rateMap = new Map()
 const RATE_WINDOW_MS = 10_000
 const RATE_MAX = 60
 
-function checkRate (key) {
-  const now = Date.now()
-  let entry = rateMap.get(key)
-  if (!entry || now - entry.start > RATE_WINDOW_MS) {
-    entry = { start: now, count: 0 }
-    rateMap.set(key, entry)
+async function checkRate (key) {
+  const kv = await getKv()
+  const countKey = `ratelimit:${key}`
+  const count = await kv.incr(countKey)
+  if (count === 1) {
+    await kv.pexpire(countKey, RATE_WINDOW_MS)
   }
-  entry.count++
-  if (entry.count > RATE_MAX) {
+  if (count > RATE_MAX) {
     console.warn('[API] rate limit exceeded for', key)
     return false
   }
@@ -391,7 +388,7 @@ app.post('/webhook', async (c) => {
       await handleCallbackQuery(update)
     }
   } catch (err) {
-    console.error('[API] Handler error:', err.message)
+    console.error('[API] Handler error:', err?.message ?? err)
     // Возвращаем 200, чтобы MAX не ретраил
   }
 
