@@ -20,6 +20,7 @@ global.fetch = async (url, opts) => {
 const { kv } = await import('../lib/kv-mock.js')
 const { handleMessage, handleBotStarted } = await import('../api/index.js')
 const { setLink: setLinkFromStorage } = await import('../lib/storage.js')
+const { daysAgo } = await import('../lib/storage.js')
 
 describe('handleMessage guard', () => {
   beforeEach(() => {
@@ -89,7 +90,10 @@ describe('handleMessage commands', () => {
       user: { user_id: 123 }
     })
     const saved = await kv.get('link:test')
-    assert.deepEqual(saved, { url: 'https://example.com', message: 'Hello!', creator_id: 123 })
+    assert.equal(saved.url, 'https://example.com')
+    assert.equal(saved.message, 'Hello!')
+    assert.equal(saved.creator_id, 123)
+    assert.ok(typeof saved.created_at === 'number')
     const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('✅'))
     assert.ok(responseCall, 'success response not found')
   })
@@ -491,5 +495,82 @@ describe('link creator ownership in handlers', () => {
     assert.equal(saved.creator_id, 123)
     const userLinks = await kv.smembers('user_links:123')
     assert.ok(userLinks.includes('newkey'))
+  })
+})
+
+describe('/stats command', () => {
+  beforeEach(() => {
+    fetchCalls = []
+    kv._clear()
+  })
+
+  it('/stats for admin with existing key should show statistics', async () => {
+    await kv.set('link:testkey', { url: 'https://x.com', message: 'Msg', created_at: Date.now() - 86400000 * 2 })
+    await kv.sadd('links_all', 'testkey')
+    await kv.sadd('link_subs:testkey', '100')
+    await kv.sadd('link_subs:testkey', '200')
+    await kv.incr('stats:new:testkey:' + daysAgo(0))
+    await kv.incr('stats:new:testkey:' + daysAgo(0))
+    await kv.incr('stats:new:testkey:' + daysAgo(1))
+
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/stats testkey' } },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('📊'))
+    assert.ok(responseCall, 'stats response not found')
+    assert.ok(responseCall.body.text.includes('testkey'), 'should mention key name')
+    assert.ok(responseCall.body.text.includes('Всего:'), 'should show total')
+  })
+
+  it('/stats for non-admin should deny', async () => {
+    await kv.set('link:testkey', { url: 'https://x.com', message: 'Msg', created_at: Date.now() })
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/stats testkey' } },
+      user: { user_id: 999 }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('⛔'))
+    assert.ok(responseCall, 'deny response not found')
+  })
+
+  it('/stats without key should show format help', async () => {
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/stats' } },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('Формат'))
+    assert.ok(responseCall, 'format help not found')
+  })
+
+  it('/stats with nonexistent key should show error', async () => {
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/stats nonexistent' } },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('не найден'))
+    assert.ok(responseCall, 'not found error not found')
+  })
+
+  it('callback stats should show general statistics', async () => {
+    await kv.sadd('users_all', '1')
+    await kv.sadd('users_all', '2')
+    await kv.incr('stats:new:total:' + daysAgo(0))
+    await kv.incr('stats:new:total:' + daysAgo(0))
+    await kv.incr('stats:new:total:' + daysAgo(1))
+
+    const { handleCallbackQuery } = await import('../api/index.js')
+    await handleCallbackQuery({
+      callback: { payload: 'stats', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('Общая статистика'))
+    assert.ok(responseCall, 'general stats response not found')
+    assert.ok(responseCall.body.text.includes('пользователей'), 'should show total users')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
   })
 })

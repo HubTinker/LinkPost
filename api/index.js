@@ -11,7 +11,9 @@ import { handle } from 'hono/vercel'
 import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead } from '../lib/max-api.js'
 import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
-  saveUser, getUserCount, reactivateUser, checkRateLimit
+  saveUser, getUserCount, reactivateUser,
+  getLinkSubCount, getLinkAge, getDailyStat, getDailyTotal, getStatRange, getTotalRange, getLinkCount,
+  daysAgo
 } from '../lib/storage.js'
 
 const app = new Hono()
@@ -73,7 +75,8 @@ async function showAdminMenu (chatId) {
       [{ type: 'callback', text: '📋 Связки', data: 'links' },
        { type: 'callback', text: '➕ Создать', data: 'create' }],
       [{ type: 'callback', text: '👥 Пользователи', data: 'users' },
-       { type: 'callback', text: '📨 Рассылка', data: 'broadcast' }]
+       { type: 'callback', text: '📊 Статистика', data: 'stats' }],
+      [{ type: 'callback', text: '📨 Рассылка', data: 'broadcast' }]
     ]
   )
 }
@@ -238,6 +241,38 @@ async function handleMessage (update) {
     return sendMessage(chat_id, `👥 В базе ${count} пользователей.`)
   }
 
+  if (text.startsWith('/stats')) {
+    if (!isAdmin(userId)) return DENY(chat_id)
+    const [key] = parseArgs(text)
+    if (!key) {
+      return sendMessage(chat_id,
+        '⚠️ Формат: /stats <ключ>\n\n' +
+        'Пример:\n/stats vip'
+      )
+    }
+    const link = await getLink(key)
+    if (!link) return sendMessage(chat_id, `❌ Ключ "${key}" не найден.`)
+
+    const total = await getLinkSubCount(key)
+    const today = await getDailyStat(key, daysAgo(0))
+    const yesterday = await getDailyStat(key, daysAgo(1))
+    const weekRange = await getStatRange(key, daysAgo(6), daysAgo(0))
+    const weekTotal = weekRange.reduce((s, d) => s + d.count, 0)
+    const age = await getLinkAge(key)
+
+    console.log('[API] /stats: key=%s, total=%d, today=%d, week=%d', key, total, today, weekTotal)
+
+    let msg = `📊 Статистика ключа «${key}»\n\n`
+    msg += `👥 Всего: ${total}\n`
+    msg += `📅 Сегодня: +${today}\n`
+    msg += `📆 Вчера: +${yesterday}\n`
+    msg += `📈 За неделю: +${weekTotal}\n`
+    if (age != null) msg += `🕐 Возраст ключа: ${age} дн.\n`
+    msg += `\n🔗 ${link.url}`
+
+    return sendMessage(chat_id, msg)
+  }
+
   // Игнорируем неизвестные команды
   if (text.startsWith('/')) return
 
@@ -290,6 +325,27 @@ async function handleCallbackQuery (update) {
 
   if (cb.payload === 'broadcast') {
     return sendMessageWithKeyboard(chatId, '📨 Рассылка пока не реализована.', [
+      [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+    ])
+  }
+
+  if (cb.payload === 'stats') {
+    console.log('[API] callback: stats → общая статистика')
+    const totalUsers = await getUserCount()
+    const totalLinks = await getLinkCount()
+    const todayTotal = await getDailyTotal(daysAgo(0))
+    const yesterdayTotal = await getDailyTotal(daysAgo(1))
+    const weekRange = await getTotalRange(daysAgo(6), daysAgo(0))
+    const weekTotal = weekRange.reduce((s, d) => s + d.count, 0)
+
+    let msg = '📊 Общая статистика\n\n'
+    msg += `👥 Всего пользователей: ${totalUsers}\n`
+    msg += `📅 Новых сегодня: +${todayTotal}\n`
+    msg += `📆 Новых вчера: +${yesterdayTotal}\n`
+    msg += `📈 Новых за неделю: +${weekTotal}\n`
+    msg += `🔑 Активных связок: ${totalLinks}`
+
+    return sendMessageWithKeyboard(chatId, msg, [
       [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
     ])
   }
