@@ -19,6 +19,7 @@ global.fetch = async (url, opts) => {
 
 const { kv } = await import('../lib/kv-mock.js')
 const { handleMessage, handleBotStarted } = await import('../api/index.js')
+const { setLink: setLinkFromStorage } = await import('../lib/storage.js')
 
 describe('handleMessage guard', () => {
   beforeEach(() => {
@@ -88,7 +89,7 @@ describe('handleMessage commands', () => {
       user: { user_id: 123 }
     })
     const saved = await kv.get('link:test')
-    assert.deepEqual(saved, { url: 'https://example.com', message: 'Hello!' })
+    assert.deepEqual(saved, { url: 'https://example.com', message: 'Hello!', creator_id: 123 })
     const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('✅'))
     assert.ok(responseCall, 'success response not found')
   })
@@ -173,14 +174,15 @@ describe('handleMessage commands', () => {
     assert.ok(responseCall, 'not found warning not found')
   })
 
-  it('/dellink should be denied for non-admin', async () => {
+  it('/dellink should be denied for non-admin (not owner)', async () => {
+    await setLinkFromStorage('test', 'https://example.com', 'Msg', 123)
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/dellink test' } },
       user: { user_id: 999 }
     })
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('⛔'))
-    assert.ok(responseCall, 'deny response not found')
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('удалять'))
+    assert.ok(responseCall, 'ownership deny response not found')
   })
 
   it('/links should list all links', async () => {
@@ -209,14 +211,14 @@ describe('handleMessage commands', () => {
     assert.ok(responseCall, 'empty state not found')
   })
 
-  it('/links should be denied for non-admin', async () => {
+  it('/links for non-admin should show empty list when no owned links', async () => {
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/links' } },
       user: { user_id: 999 }
     })
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('⛔'))
-    assert.ok(responseCall, 'deny response not found')
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('📭'))
+    assert.ok(responseCall, 'empty state not found for non-admin')
   })
 
   it('/users should return user count', async () => {
@@ -320,7 +322,7 @@ describe('callback_query handling', () => {
   })
 
   it('should show confirmation on del: callback without deleting', async () => {
-    await kv.set('link:test', { url: 'https://x.com', message: 'Msg' })
+    await kv.set('link:test', { url: 'https://x.com', message: 'Msg', creator_id: 123 })
     await handleCallbackQuery({
       callback: { payload: 'del:test', user: { user_id: 123 } },
       message: { recipient: { chat_id: 1 } }
@@ -336,7 +338,7 @@ describe('callback_query handling', () => {
   })
 
   it('should delete link on confirm_del: callback', async () => {
-    await kv.set('link:test', { url: 'https://x.com', message: 'Msg' })
+    await kv.set('link:test', { url: 'https://x.com', message: 'Msg', creator_id: 123 })
     await handleCallbackQuery({
       callback: { payload: 'confirm_del:test', user: { user_id: 123 } },
       message: { recipient: { chat_id: 1 } }
@@ -416,7 +418,7 @@ describe('callback_query handling', () => {
   })
 
   it('should handle confirm_del: with colon in key name', async () => {
-    await kv.set('link:key:sub', { url: 'https://x.com', message: 'Msg' })
+    await kv.set('link:key:sub', { url: 'https://x.com', message: 'Msg', creator_id: 123 })
     await handleCallbackQuery({
       callback: { payload: 'confirm_del:key:sub', user: { user_id: 123 } },
       message: { recipient: { chat_id: 1 } }
@@ -435,5 +437,59 @@ describe('callback_query handling', () => {
     })
     const responseCall = fetchCalls.find(c => c.body?.text?.includes('⛔'))
     assert.ok(responseCall, 'deny response not found')
+  })
+})
+
+describe('link creator ownership in handlers', () => {
+  beforeEach(() => {
+    fetchCalls = []
+    kv._clear()
+  })
+
+  it('/links for non-admin should show only owned links', async () => {
+    await setLinkFromStorage('a', 'https://a.com', 'A', 999)
+    await setLinkFromStorage('b', 'https://b.com', 'B', 123)
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/links' } },
+      user: { user_id: 999 }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('a.com'))
+    assert.ok(responseCall, 'should show owned link a.com')
+    assert.ok(!responseCall.body.text.includes('b.com'), 'should NOT show link b.com owned by 123')
+  })
+
+  it('/dellink should allow non-admin to request delete of own key', async () => {
+    await setLinkFromStorage('mykey', 'https://x.com', 'Msg', 999)
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/dellink mykey' } },
+      user: { user_id: 999 }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('🗑 Удалить'))
+    assert.ok(responseCall, 'should show confirmation for own key deletion')
+  })
+
+  it('/dellink should deny non-admin from deleting others key', async () => {
+    await setLinkFromStorage('adminkey', 'https://x.com', 'Msg', 123)
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/dellink adminkey' } },
+      user: { user_id: 999 }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('удалять'))
+    assert.ok(responseCall, 'should deny deletion of others key')
+  })
+
+  it('/setlink for admin should store creator_id', async () => {
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/setlink newkey https://new.com Hello!' } },
+      user: { user_id: 123 }
+    })
+    const saved = await kv.get('link:newkey')
+    assert.equal(saved.creator_id, 123)
+    const userLinks = await kv.smembers('user_links:123')
+    assert.ok(userLinks.includes('newkey'))
   })
 })
