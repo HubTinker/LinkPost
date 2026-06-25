@@ -11,7 +11,7 @@ import { handle } from 'hono/vercel'
 import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead } from '../lib/max-api.js'
 import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
-  saveUser, getUserCount, reactivateUser, getKv
+  saveUser, getUserCount, reactivateUser, checkRateLimit
 } from '../lib/storage.js'
 
 export const config = { runtime: 'edge' }
@@ -342,22 +342,8 @@ async function handleCallbackQuery (update) {
 
 // ── Rate Limiter (Vercel KV) ─────────────────────────────────────────────────
 
-const RATE_WINDOW_MS = 10_000
-const RATE_MAX = 60
-
-async function checkRate (key) {
-  const kv = await getKv()
-  const countKey = `ratelimit:${key}`
-  const count = await kv.incr(countKey)
-  if (count === 1) {
-    await kv.pexpire(countKey, RATE_WINDOW_MS)
-  }
-  if (count > RATE_MAX) {
-    console.warn('[API] rate limit exceeded for', key)
-    return false
-  }
-  return true
-}
+const RATE_WINDOW_MS = 10_000 // 10 seconds
+const RATE_MAX = 60 // max requests per window per IP
 
 // ── Маршруты Hono ─────────────────────────────────────────────────────────────
 
@@ -369,7 +355,8 @@ app.post('/webhook', async (c) => {
   }
 
   const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
-  if (!await checkRate(ip)) {
+  if (!await checkRateLimit(ip, RATE_MAX, RATE_WINDOW_MS)) {
+    console.warn('[API] rate limit exceeded for', ip)
     return c.json({ error: 'Too Many Requests' }, 429)
   }
   let update
