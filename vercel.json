@@ -5,7 +5,8 @@
       "src": "api/index.js",
       "use": "@vercel/node",
       "config": {
-        "runtime": "nodejs20.x"
+        "runtime": "nodejs20.x",
+        "includeFiles": "certs/**"
       }
     }
   ],
