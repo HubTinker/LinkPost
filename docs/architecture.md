@@ -11,11 +11,31 @@ LinkPost использует Layered Architecture (слоистую архит�
 ```
 lib/
 ├── max-api.js        # Слой интеграции — обёртка над MAX Bot REST API
-└── storage.js        # Слой данных — работа с Vercel KV
+├── storage.js        # Слой данных — работа с Vercel KV
+└── kv-mock.js        # Мок KV для локальной разработки
 
 api/
 └── index.js          # Слой представления — Hono-роуты и обработчики
+
+scripts/
+├── backup-kv.js      # Бекап всей KV-базы в JSON
+├── migrate-creators.js # Миграция: назначение creator_id старым связкам
+├── dev-server.js     # Локальный dev-сервер
+└── setup-webhook.js  # Ручная регистрация webhook
 ```
+
+## Структура KV
+
+```
+link:<key>       → { url, message, creator_id }   # Связка ключ-ссылка
+links_all        → Set<key>                       # Все ключи связок
+user_links:<id>  → Set<key>                       # Индекс: ключи по создателю
+link_subs:<key>  → Set<user_id>                   # Подписчики на ключ
+user:<id>        → { user_id, name, ... }         # Профиль пользователя
+users_all        → Set<user_id>                   # Все пользователи
+```
+
+Индекс `user_links:<userId>` заполняется при создании связки и очищается при удалении.
 
 ## Поток данных
 
