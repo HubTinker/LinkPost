@@ -457,7 +457,32 @@ app.get('/check-migration', async (c) => {
   return c.json(results)
 })
 
-export default handle(app)
+const webHandler = handle(app)
+
+export default async function nodeHandler (req, res) {
+  const proto = req.headers['x-forwarded-proto'] || 'https'
+  const host = req.headers.host || 'localhost'
+  const url = `${proto}://${host}${req.url}`
+
+  const init = { method: req.method, headers: req.headers }
+  if (!['GET', 'HEAD'].includes(req.method)) {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    init.body = Buffer.concat(chunks)
+  }
+
+  const webReq = new Request(url, init)
+  const webRes = await webHandler(webReq)
+
+  res.statusCode = webRes.status
+  for (const [key, value] of webRes.headers) {
+    res.setHeader(key, value)
+  }
+
+  const body = await webRes.arrayBuffer()
+  res.end(Buffer.from(body))
+}
+
 export { app, handleBotStarted, handleMessage, handleCallbackQuery }
 
 
