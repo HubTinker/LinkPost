@@ -14,7 +14,6 @@ import {
   saveUser, getUserCount, reactivateUser, checkRateLimit
 } from '../lib/storage.js'
 
-export const config = { runtime: 'nodejs20.x' }
 
 const app = new Hono()
 
