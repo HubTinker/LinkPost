@@ -421,31 +421,60 @@ app.get('/check-migration', async (c) => {
   const results = {}
   const BOT_TOKEN = process.env.BOT_TOKEN
 
+  // Используем https.request с CA (как lib/max-api.js)
+  const https = await import('node:https')
+  const fs = await import('node:fs')
+  let ca = null
+  try {
+    ca = fs.readFileSync('certs/mincifra-chain.pem')
+  } catch {}
+
+  results.env = {
+    NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS || null,
+    has_cert_file: !!ca
+  }
+
+  function fetchWithCA (url) {
+    return new Promise((resolve, reject) => {
+      const u = new URL(url)
+      const options = {
+        hostname: u.hostname,
+        port: u.port || 443,
+        path: u.pathname + u.search,
+        method: 'GET',
+        headers: { Authorization: BOT_TOKEN },
+        ca: ca || undefined
+      }
+      const req = https.request(options, (res) => {
+        let data = ''
+        res.on('data', chunk => { data += chunk })
+        res.on('end', () => {
+          resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body: data })
+        })
+      })
+      req.on('error', reject)
+      req.end()
+    })
+  }
+
   alog('DEBUG', 'check-migration: testing platform-api2.max.ru')
   try {
-    const r2 = await fetch('https://platform-api2.max.ru/me', {
-      headers: { Authorization: BOT_TOKEN }
-    })
-    const body2 = await r2.text()
-    results.api2 = { ok: r2.ok, status: r2.status, body: body2.slice(0, 500) }
+    const r2 = await fetchWithCA('https://platform-api2.max.ru/me')
+    results.api2 = { ok: r2.ok, status: r2.status, body: r2.body.slice(0, 500) }
     alog('DEBUG', 'check-migration: api2 → ok=%s, status=%d', r2.ok, r2.status)
   } catch (e) {
-    alog('ERROR', 'check-migration: api2 fetch failed:', e.message, 'name:', e.name)
+    alog('ERROR', 'check-migration: api2 fetch failed:', e.message)
     results.api2 = {
       error: e.message,
       name: e.name,
-      cause: e.cause ? String(e.cause) : null,
       stack: (e.stack ?? '').split('\n').slice(0, 4)
     }
   }
 
   alog('DEBUG', 'check-migration: testing platform-api.max.ru')
   try {
-    const r1 = await fetch('https://platform-api.max.ru/me', {
-      headers: { Authorization: BOT_TOKEN }
-    })
-    const body1 = await r1.text()
-    results.api1 = { ok: r1.ok, status: r1.status, body: body1.slice(0, 500) }
+    const r1 = await fetchWithCA('https://platform-api.max.ru/me')
+    results.api1 = { ok: r1.ok, status: r1.status, body: r1.body.slice(0, 500) }
     alog('DEBUG', 'check-migration: api1 → ok=%s, status=%d', r1.ok, r1.status)
   } catch (e) {
     alog('ERROR', 'check-migration: api1 fetch failed:', e.message)
