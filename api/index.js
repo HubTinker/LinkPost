@@ -421,8 +421,7 @@ app.get('/check-migration', async (c) => {
   const results = {}
   const BOT_TOKEN = process.env.BOT_TOKEN
 
-  // Используем https.request с комбинированными CA
-  const https = await import('node:https')
+  // Используем tls.connect с комбинированными CA
   const tls = await import('node:tls')
   const fs = await import('node:fs')
   let combinedCAs = null
@@ -442,23 +441,29 @@ app.get('/check-migration', async (c) => {
   function fetchWithCA (url) {
     return new Promise((resolve, reject) => {
       const u = new URL(url)
-      const options = {
-        hostname: u.hostname,
+      const socket = tls.connect({
+        host: u.hostname,
         port: u.port || 443,
-        path: u.pathname + u.search,
-        method: 'GET',
-        headers: { Authorization: BOT_TOKEN },
-        ca: combinedCAs || undefined
-      }
-      const req = https.request(options, (res) => {
+        servername: u.hostname,
+        ca: combinedCAs
+      }, () => {
+        socket.write(`GET ${u.pathname}${u.search} HTTP/1.1\r\n`)
+        socket.write(`Host: ${u.hostname}\r\n`)
+        socket.write(`Authorization: ${BOT_TOKEN}\r\n`)
+        socket.write(`Connection: close\r\n`)
+        socket.write(`\r\n`)
+
         let data = ''
-        res.on('data', chunk => { data += chunk })
-        res.on('end', () => {
-          resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body: data })
+        socket.on('data', chunk => { data += chunk })
+        socket.on('end', () => {
+          const headerEnd = data.indexOf('\r\n\r\n')
+          const body = headerEnd !== -1 ? data.slice(headerEnd + 4) : data
+          const statusLine = data.split('\r\n')[0]
+          const statusCode = parseInt(statusLine.split(' ')[1], 10)
+          resolve({ ok: statusCode >= 200 && statusCode < 300, status: statusCode, body })
         })
       })
-      req.on('error', reject)
-      req.end()
+      socket.on('error', reject)
     })
   }
 
