@@ -476,8 +476,9 @@ app.get('/check-migration', async (c) => {
   let combinedCAs = null
   let hasCertFile = false
   try {
-    const extra = fs.readFileSync('certs/mincifra-chain.pem').toString()
-    combinedCAs = [...tls.rootCertificates, extra]
+    const extraPem = fs.readFileSync('certs/mincifra-chain.pem').toString()
+    const extraCerts = extraPem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) || []
+    combinedCAs = [...tls.rootCertificates, ...extraCerts]
     hasCertFile = true
   } catch {}
 
