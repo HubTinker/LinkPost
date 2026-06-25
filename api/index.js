@@ -13,20 +13,6 @@ import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
   saveUser, getUserCount, reactivateUser, checkRateLimit
 } from '../lib/storage.js'
-import { readFileSync } from 'node:fs'
-
-// ── CA cert for Node.js runtime ──────────────────────────────────────────────
-let CA_STATUS = 'not-attempted'
-try {
-  const { setGlobalDispatcher, Agent } = await import('undici')
-  const ca = readFileSync('certs/mincifra-chain.pem')
-  setGlobalDispatcher(new Agent({ connect: { ca: [ca] } }))
-  CA_STATUS = 'loaded'
-  console.log('[API] loaded CA cert for undici')
-} catch (e) {
-  CA_STATUS = `failed: ${e.message}`
-  console.log('[API] undici CA setup skipped:', e.message)
-}
 
 const app = new Hono()
 
@@ -467,7 +453,6 @@ app.get('/check-migration', async (c) => {
   }
 
   alog('DEBUG', 'check-migration: results → %o', results)
-  results.ca_status = CA_STATUS
   return c.json(results)
 })
 
