@@ -13,7 +13,17 @@ import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
   saveUser, getUserCount, reactivateUser, checkRateLimit
 } from '../lib/storage.js'
+import { readFileSync } from 'node:fs'
 
+// ── CA cert for Node.js runtime ──────────────────────────────────────────────
+try {
+  const { setGlobalDispatcher, Agent } = await import('undici')
+  const ca = readFileSync('certs/mincifra-chain.pem')
+  setGlobalDispatcher(new Agent({ connect: { ca: [ca] } }))
+  console.log('[API] loaded CA cert for undici')
+} catch (e) {
+  console.log('[API] undici CA setup skipped:', e.message)
+}
 
 const app = new Hono()
 
