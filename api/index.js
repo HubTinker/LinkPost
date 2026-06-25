@@ -413,6 +413,46 @@ app.get('/debug/:key', async (c) => {
   })
 })
 
+/** Проверка совместимости с новым API — TLS из Edge Runtime */
+app.get('/check-migration', async (c) => {
+  const secret = c.req.query('secret')
+  if (secret !== process.env.SETUP_SECRET) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  const results = {}
+  const BOT_TOKEN = process.env.BOT_TOKEN
+
+  alog('DEBUG', 'check-migration: testing platform-api2.max.ru')
+  try {
+    const r2 = await fetch('https://platform-api2.max.ru/me', {
+      headers: { Authorization: BOT_TOKEN }
+    })
+    const body2 = await r2.text()
+    results.api2 = { ok: r2.ok, status: r2.status, body: body2.slice(0, 500) }
+    alog('DEBUG', 'check-migration: api2 → ok=%s, status=%d', r2.ok, r2.status)
+  } catch (e) {
+    alog('ERROR', 'check-migration: api2 fetch failed:', e.message)
+    results.api2 = { error: e.message }
+  }
+
+  alog('DEBUG', 'check-migration: testing platform-api.max.ru')
+  try {
+    const r1 = await fetch('https://platform-api.max.ru/me', {
+      headers: { Authorization: BOT_TOKEN }
+    })
+    const body1 = await r1.text()
+    results.api1 = { ok: r1.ok, status: r1.status, body: body1.slice(0, 500) }
+    alog('DEBUG', 'check-migration: api1 → ok=%s, status=%d', r1.ok, r1.status)
+  } catch (e) {
+    alog('ERROR', 'check-migration: api1 fetch failed:', e.message)
+    results.api1 = { error: e.message }
+  }
+
+  alog('DEBUG', 'check-migration: results → %o', results)
+  return c.json(results)
+})
+
 export default handle(app)
 export { app, handleBotStarted, handleMessage, handleCallbackQuery }
 
