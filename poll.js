@@ -1,3 +1,7 @@
+/**
+ * Long polling скрипт — ТОЛЬКО для локальной разработки.
+ * На production используйте webhook через /setup-webhook.
+ */
 import dotenv from 'dotenv'
 import { handleBotStarted, handleMessage, handleCallbackQuery } from './api/index.js'
 dotenv.config({ path: '.env.local' })

@@ -26,6 +26,15 @@ const ADMIN_IDS = (process.env.ADMIN_USER_IDS ?? '')
 
 const BOT_NICK = process.env.BOT_NICK ?? 'YourBot'
 
+const LOG_LEVEL = (process.env.LOG_LEVEL ?? 'INFO').toUpperCase()
+const LV = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 }
+
+function alog (level, ...args) {
+  if ((LV[level] ?? 1) >= (LV[LOG_LEVEL] ?? 1)) {
+    console.log(`[API] [${level}]`, ...args)
+  }
+}
+
 const isAdmin = (userId) => ADMIN_IDS.includes(userId)
 
 // ── Утилиты ───────────────────────────────────────────────────────────────────
@@ -58,7 +67,7 @@ function buildLinksKeyboard (links) {
 /** Показать админское главное меню */
 async function showAdminMenu (chatId) {
   const count = await getUserCount()
-  console.log('[API] showAdminMenu: показано меню для чата', chatId)
+  alog('DEBUG', ' showAdminMenu: показано меню для чата', chatId)
   await sendMessageWithKeyboard(
     chatId,
     `👋 Привет, Админ! В базе ${count} пользователей.`,
@@ -154,8 +163,12 @@ async function handleMessage (update) {
         'Пример:\n/setlink vip https://max.ru/channel/xxx Добро пожаловать! 🎉'
       )
     }
-    if (!/^https?:\/\/.+/.test(url)) {
-      return sendMessage(chat_id, '⚠️ URL должен начинаться с http:// или https://')
+    let parsedUrl
+    try {
+      parsedUrl = new URL(url)
+      if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('bad protocol')
+    } catch {
+      return sendMessage(chat_id, '⚠️ URL должен быть валидным и начинаться с http:// или https://')
     }
     if (key.length > 50) {
       return sendMessage(chat_id, '⚠️ Ключ слишком длинный (максимум 50 символов).')
@@ -164,9 +177,9 @@ async function handleMessage (update) {
       return sendMessage(chat_id, '⚠️ URL слишком длинный (максимум 2048 символов).')
     }
     const msg = rest.join(' ').slice(0, 4096)
-    console.log('[API] /setlink: key=%s, url=%s, creator=%d', key, url, userId)
+    alog('DEBUG', ' /setlink: key=%s, url=%s, creator=%d', key, url, userId)
     await setLink(key, url, msg, userId)
-    console.log('[API] /setlink: saved successfully')
+    alog('DEBUG', ' /setlink: saved successfully')
     return sendMessage(
       chat_id,
       '✅ Связка сохранена!\n\n' +
@@ -184,10 +197,10 @@ async function handleMessage (update) {
     if (!existing) return sendMessage(chat_id, `❌ Ключ "${key}" не найден.`)
     const isAdminUser = isAdmin(userId)
     if (!isAdminUser && existing.creator_id !== userId) {
-      console.log('[API] /dellink: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
+      alog('DEBUG', ' /dellink: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
       return sendMessage(chat_id, '⛔ Вы можете удалять только свои ключи.')
     }
-    console.log('[API] /dellink: confirmed for key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
+    alog('DEBUG', ' /dellink: confirmed for key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
     return sendMessageWithKeyboard(
       chat_id,
       `🗑 Удалить связку "${key}"?\n\n🔗 ${existing.url}\n\n💬 ${existing.message}`,
@@ -203,7 +216,7 @@ async function handleMessage (update) {
   if (text.startsWith('/links')) {
     const isAdminUser = isAdmin(userId)
     const links = isAdminUser ? await getAllLinks() : await getLinksByCreator(userId)
-    console.log('[API] /links: userId=%d, isAdmin=%s, found=%d links', userId, isAdminUser, links.length)
+    alog('DEBUG', ' /links: userId=%d, isAdmin=%s, found=%d links', userId, isAdminUser, links.length)
     if (!links.length) {
       return sendMessageWithKeyboard(chat_id, '📭 Нет активных связок. Добавьте первую через /setlink.', [
         [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
@@ -285,7 +298,7 @@ async function handleCallbackQuery (update) {
   }
 
   if (cb.payload === 'back') {
-    console.log('[API] callback: back → главное меню')
+    alog('DEBUG', ' callback: back → главное меню')
     return showAdminMenu(chatId)
   }
 
@@ -294,10 +307,10 @@ async function handleCallbackQuery (update) {
     const existing = await getLink(key)
     if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
     if (existing.creator_id !== userId) {
-      console.log('[API] del: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
+      alog('DEBUG', ' del: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
       return sendMessage(chatId, '⛔ Вы можете удалять только свои ключи.')
     }
-    console.log('[API] del: confirmation requested for key=%s, userId=%d', key, userId)
+    alog('DEBUG', ' del: confirmation requested for key=%s, userId=%d', key, userId)
     return sendMessageWithKeyboard(
       chatId,
       `🗑 Удалить связку "${key}"?\n\n🔗 ${existing.url}\n\n💬 ${existing.message}`,
@@ -315,10 +328,10 @@ async function handleCallbackQuery (update) {
     const existing = await getLink(key)
     if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
     if (existing.creator_id !== userId) {
-      console.log('[API] confirm_del: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
+      alog('DEBUG', ' confirm_del: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
       return sendMessage(chatId, '⛔ Вы можете удалять только свои ключи.')
     }
-    console.log('[API] confirm_del: deleted key=%s by userId=%d', key, userId)
+    alog('DEBUG', ' confirm_del: deleted key=%s by userId=%d', key, userId)
     await delLink(key)
     return sendMessageWithKeyboard(chatId, `🗑 Связка "${key}" удалена.`, [
       [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
@@ -328,10 +341,40 @@ async function handleCallbackQuery (update) {
   console.warn('[API] handleCallbackQuery: неизвестный payload', cb.payload)
 }
 
+// ── Rate Limiter ──────────────────────────────────────────────────────────────
+
+const rateMap = new Map()
+const RATE_WINDOW_MS = 10_000
+const RATE_MAX = 60
+
+function checkRate (key) {
+  const now = Date.now()
+  let entry = rateMap.get(key)
+  if (!entry || now - entry.start > RATE_WINDOW_MS) {
+    entry = { start: now, count: 0 }
+    rateMap.set(key, entry)
+  }
+  entry.count++
+  if (entry.count > RATE_MAX) {
+    console.warn('[API] rate limit exceeded for', key)
+    return false
+  }
+  return true
+}
+
 // ── Маршруты Hono ─────────────────────────────────────────────────────────────
 
 /** Главный webhook — сюда шлёт MAX */
 app.post('/webhook', async (c) => {
+  const ct = c.req.header('content-type') || ''
+  if (!ct.includes('application/json')) {
+    return c.json({ error: 'Content-Type must be application/json' }, 400)
+  }
+
+  const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
+  if (!checkRate(ip)) {
+    return c.json({ error: 'Too Many Requests' }, 429)
+  }
   let update
   try {
     update = await c.req.json()
@@ -348,7 +391,7 @@ app.post('/webhook', async (c) => {
       await handleCallbackQuery(update)
     }
   } catch (err) {
-    console.error('Handler error:', err)
+    console.error('[API] Handler error:', err.message)
     // Возвращаем 200, чтобы MAX не ретраил
   }
 
@@ -369,8 +412,12 @@ app.get('/setup-webhook', async (c) => {
 
 app.get('/', (c) => c.json({ status: 'LinkPost Bot is running 🚀' }))
 
-/** Диагностика — проверка ключа в KV */
+/** Диагностика — проверка ключа в KV (требует SETUP_SECRET) */
 app.get('/debug/:key', async (c) => {
+  const secret = c.req.query('secret')
+  if (secret !== process.env.SETUP_SECRET) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
   const key = c.req.param('key')
   const data = await getLink(key)
   const allKeys = await getAllLinks()
@@ -384,3 +431,5 @@ app.get('/debug/:key', async (c) => {
 
 export default handle(app)
 export { app, handleBotStarted, handleMessage, handleCallbackQuery }
+
+
