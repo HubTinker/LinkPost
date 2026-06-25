@@ -432,8 +432,13 @@ app.get('/check-migration', async (c) => {
     results.api2 = { ok: r2.ok, status: r2.status, body: body2.slice(0, 500) }
     alog('DEBUG', 'check-migration: api2 → ok=%s, status=%d', r2.ok, r2.status)
   } catch (e) {
-    alog('ERROR', 'check-migration: api2 fetch failed:', e.message)
-    results.api2 = { error: e.message }
+    alog('ERROR', 'check-migration: api2 fetch failed:', e.message, 'name:', e.name)
+    results.api2 = {
+      error: e.message,
+      name: e.name,
+      cause: e.cause ? String(e.cause) : null,
+      stack: (e.stack ?? '').split('\n').slice(0, 4)
+    }
   }
 
   alog('DEBUG', 'check-migration: testing platform-api.max.ru')
