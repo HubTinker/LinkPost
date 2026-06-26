@@ -11,7 +11,7 @@ import { handle } from 'hono/vercel'
 import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead, sendBroadcastMessage } from '../lib/max-api.js'
 import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
-  saveUser, getUserCount, reactivateUser,
+  saveUser, getUserCount, getAllUsers, reactivateUser, markInactive,
   getLinkSubCount, getLinkAge, getDailyStat, getDailyTotal, getStatRange, getTotalRange, getLinkCount,
   getLinksRankedBySubs,
   daysAgo
@@ -20,7 +20,7 @@ import {
   createBroadcast, getBroadcast, updateBroadcast, deleteBroadcast,
   getAllBroadcasts, getScheduledBroadcasts,
   markSent, markDelivered, markOpened, markUnsubbed,
-  getBroadcastStats
+  getBroadcastStats, getCursor, setCursor, isSent
 } from '../lib/broadcast.js'
 
 const app = new Hono()
@@ -192,6 +192,24 @@ async function handleMessage (update) {
   if (user?.user_id) {
     await saveUser({ user_id: user.user_id, name: user.name, username: user.username })
     await reactivateUser(user.user_id)
+  }
+
+  // Track broadcast opens
+  if (user?.user_id) {
+    try {
+      const recentBroadcasts = await getAllBroadcasts()
+      const window72h = Date.now() - 72 * 3600000
+      for (const rb of recentBroadcasts) {
+        if (rb.created_at > window72h && (rb.status === 'sending' || rb.status === 'sent')) {
+          const wasSent = await isSent(rb.id, user.user_id)
+          if (wasSent) {
+            await markOpened(rb.id, user.user_id)
+          }
+        }
+      }
+    } catch (e) {
+      // Silently ignore tracking failures — don't block user interaction
+    }
   }
 
   const userId = user?.user_id
@@ -427,6 +445,24 @@ async function handleCallbackQuery (update) {
   const userId = cb.user.user_id
 
   if (!isAdmin(userId)) return
+
+  // Track broadcast opens
+  if (cb.user?.user_id) {
+    try {
+      const recentBroadcasts = await getAllBroadcasts()
+      const window72h = Date.now() - 72 * 3600000
+      for (const rb of recentBroadcasts) {
+        if (rb.created_at > window72h && (rb.status === 'sending' || rb.status === 'sent')) {
+          const wasSent = await isSent(rb.id, cb.user.user_id)
+          if (wasSent) {
+            await markOpened(rb.id, cb.user.user_id)
+          }
+        }
+      }
+    } catch (e) {
+      // Silently ignore tracking failures — don't block user interaction
+    }
+  }
 
   if (cb.payload === 'links') {
     const links = await getAllLinks()
@@ -705,6 +741,29 @@ async function handleCallbackQuery (update) {
     return sendMessageWithKeyboard(chatId, formatBroadcastDetail(b), btnRows)
   }
 
+  if (cb.payload.startsWith('broadcast_stats:')) {
+    const bid = cb.payload.slice('broadcast_stats:'.length)
+    const b = await getBroadcast(bid)
+    if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
+    const stats = await getBroadcastStats(bid)
+    const totalUsers = await getUserCount()
+    const openPct = stats.sent ? Math.round(stats.opened / stats.sent * 100) : 0
+    const unsubPct = stats.sent ? Math.round(stats.unsubbed / stats.sent * 100) : 0
+
+    let msg = `📊 Статистика рассылки #${bid}\n\n`
+    msg += `📝 Текст: ${(b.text || '').slice(0, 100)}${(b.text?.length || 0) > 100 ? '...' : ''}\n`
+    msg += `📅 Статус: ${statusLabel(b.status)}\n`
+    if (b.scheduled_at) msg += `🕐 Запланирована: ${new Date(b.scheduled_at).toLocaleString('ru')}\n`
+    msg += '\n'
+    msg += `✅ Отправлено:   ${stats.sent} / ${totalUsers}\n`
+    msg += `👁 Открыто:       ${stats.opened} (${openPct}%)\n`
+    msg += `🚫 Отписалось:    ${stats.unsubbed} (${unsubPct}%)\n`
+
+    return sendMessageWithKeyboard(chatId, msg, [
+      [{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]
+    ])
+  }
+
   if (cb.payload.startsWith('broadcast_delete:')) {
     const bid = cb.payload.slice('broadcast_delete:'.length)
     return sendMessageWithKeyboard(chatId,
@@ -829,6 +888,27 @@ app.post('/webhook', async (c) => {
     } else if (update.update_type === 'message_callback') {
       await handleCallbackQuery(update)
     }
+    if (update.update_type === 'bot_stopped') {
+      const userId = update.user?.user_id
+      if (userId) {
+        await markInactive(userId)
+        try {
+          const recentBroadcasts = await getAllBroadcasts()
+          const sevenDaysAgo = Date.now() - 7 * 86400000
+          for (const rb of recentBroadcasts) {
+            if (rb.created_at > sevenDaysAgo) {
+              const wasSent = await isSent(rb.id, userId)
+              if (wasSent) {
+                await markUnsubbed(rb.id, userId)
+                console.log(`[broadcast] ${rb.id}: user ${userId} unsubscribed after broadcast`)
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[API] bot_stopped: broadcast unsub tracking failed:', e.message)
+        }
+      }
+    }
   } catch (err) {
     console.error('[API] Handler error:', err?.message ?? err)
     // Возвращаем 200, чтобы MAX не ретраил
@@ -847,6 +927,65 @@ app.get('/setup-webhook', async (c) => {
   const webhookUrl = `https://${c.req.header('host')}/webhook`
   const result = await registerWebhook(webhookUrl)
   return c.json({ webhookUrl, result })
+})
+
+app.get('/process-broadcasts', async (c) => {
+  const secret = c.req.query('secret')
+  if (secret !== process.env.SETUP_SECRET) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  const broadcasts = await getScheduledBroadcasts()
+  if (!broadcasts.length) {
+    return c.json({ message: 'No broadcasts to process' })
+  }
+
+  const results = []
+
+  for (const b of broadcasts) {
+    try {
+      await updateBroadcast(b.id, { status: 'sending' })
+      console.log(`[broadcast] ${b.id}: started`)
+
+      const users = await getAllUsers()
+      const cursor = await getCursor(b.id)
+      const batchSize = 20
+      const batch = users.slice(cursor, cursor + batchSize)
+
+      let sentInBatch = 0
+      for (const user of batch) {
+        try {
+          const alreadySent = await isSent(b.id, user.user_id)
+          if (alreadySent) continue
+
+          await sendBroadcastMessage(user.user_id, b)
+          await markSent(b.id, user.user_id)
+          await markDelivered(b.id, user.user_id)
+          sentInBatch++
+        } catch (err) {
+          console.error(`[broadcast] ${b.id}: ERROR for userId=${user.user_id}: ${err.message}`)
+        }
+      }
+
+      const newCursor = cursor + batch.length
+      await setCursor(b.id, newCursor)
+
+      if (newCursor >= users.length) {
+        await updateBroadcast(b.id, { status: 'sent' })
+        console.log(`[broadcast] ${b.id}: completed (${users.length} users)`)
+      } else {
+        console.log(`[broadcast] ${b.id}: progress ${newCursor}/${users.length}`)
+        await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
+      }
+
+      results.push({ id: b.id, sent: sentInBatch, cursor: newCursor, total: users.length })
+    } catch (err) {
+      console.error(`[broadcast] ${b.id}: fatal error: ${err.message}`)
+      results.push({ id: b.id, error: err.message })
+    }
+  }
+
+  return c.json({ processed: results.length, results })
 })
 
 app.get('/', (c) => c.json({ status: 'LinkPost Bot is running 🚀' }))
