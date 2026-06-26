@@ -468,10 +468,17 @@ async function handleCallbackQuery (update) {
   }
 
   if (cb.payload === 'broadcast_create') {
+    // Cancel any existing draft for this admin
+    const oldDraft = await getActiveDraft(userId)
+    if (oldDraft) {
+      await updateBroadcast(oldDraft.id, { status: 'cancelled' })
+      alog('DEBUG', 'broadcast_create: cancelled old draft %s', oldDraft.id)
+    }
     const draft = await createBroadcast({
       text: '',
       created_by: userId
     })
+    alog('DEBUG', 'broadcast_create: new draft %s for userId=%d', draft.id, userId)
     return sendMessageWithKeyboard(chatId,
       '📝 Новая рассылка (шаг 1/4)\n\n' +
       'Введите текст сообщения (поддерживается Markdown):\n\n' +
