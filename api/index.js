@@ -953,21 +953,27 @@ app.get('/process-broadcasts', async (c) => {
       const batch = users.slice(cursor, cursor + batchSize)
 
       let sentInBatch = 0
+      let processedInBatch = 0
       for (const user of batch) {
         try {
           const alreadySent = await isSent(b.id, user.user_id)
-          if (alreadySent) continue
+          if (alreadySent) {
+            processedInBatch++
+            continue
+          }
 
           await sendBroadcastMessage(user.user_id, b)
           await markSent(b.id, user.user_id)
           await markDelivered(b.id, user.user_id)
           sentInBatch++
+          processedInBatch++
         } catch (err) {
           console.error(`[broadcast] ${b.id}: ERROR for userId=${user.user_id}: ${err.message}`)
+          // Failed — cursor does NOT advance, will retry next tick
         }
       }
 
-      const newCursor = cursor + batch.length
+      const newCursor = cursor + processedInBatch
       await setCursor(b.id, newCursor)
 
       if (newCursor >= users.length) {
