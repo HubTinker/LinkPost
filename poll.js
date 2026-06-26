@@ -85,6 +85,21 @@ async function poll () {
   }
 }
 
+async function processBroadcasts () {
+  const baseUrl = process.env.BASE_URL || 'http://localhost:3000'
+  const secret = process.env.SETUP_SECRET
+  if (!secret) return
+  try {
+    const bcRes = await fetch(`${baseUrl}/process-broadcasts?secret=${secret}`)
+    const bcData = await bcRes.json()
+    console.log('[BROADCAST]', JSON.stringify(bcData))
+  } catch (err) {
+    console.error('[BROADCAST] Poll error:', err.message)
+  }
+}
+
 console.log('🔄 Long Polling запущен (ждём события из MAX)...')
 setInterval(poll, 1000)
+setInterval(processBroadcasts, 60000)
 poll()
+processBroadcasts()
