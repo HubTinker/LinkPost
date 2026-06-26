@@ -394,11 +394,6 @@ async function handleCallbackQuery (update) {
   console.warn('[API] handleCallbackQuery: неизвестный payload', cb.payload)
 }
 
-// ── Rate Limiter (Vercel KV) ─────────────────────────────────────────────────
-
-const RATE_WINDOW_MS = 10_000 // 10 seconds
-const RATE_MAX = 60 // max requests per window per IP
-
 // ── Маршруты Hono ─────────────────────────────────────────────────────────────
 
 /** Главный webhook — сюда шлёт MAX */
@@ -408,11 +403,6 @@ app.post('/webhook', async (c) => {
     return c.json({ error: 'Content-Type must be application/json' }, 400)
   }
 
-  const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
-  if (!await checkRateLimit(ip, RATE_MAX, RATE_WINDOW_MS)) {
-    console.warn('[API] rate limit exceeded for', ip)
-    return c.json({ error: 'Too Many Requests' }, 429)
-  }
   let update
   try {
     update = await c.req.json()
