@@ -974,6 +974,8 @@ app.get('/process-broadcasts', async (c) => {
         console.log(`[broadcast] ${b.id}: completed (${users.length} users)`)
       } else {
         console.log(`[broadcast] ${b.id}: progress ${newCursor}/${users.length}`)
+        // Set back to scheduled so next invocation picks it up
+        await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
         // Fire-and-forget: continue with next batch
         const host = c.req.header('host')
         const scheme = c.req.header('x-forwarded-proto') || 'https'
