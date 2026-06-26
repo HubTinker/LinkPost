@@ -410,13 +410,13 @@ describe('callback_query handling', () => {
     assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
   })
 
-  it('should show broadcast placeholder with back button', async () => {
+  it('should show broadcast menu with back button', async () => {
     await handleCallbackQuery({
-      callback: { payload: 'broadcast', user: { user_id: 123 } },
+      callback: { payload: 'broadcast_menu', user: { user_id: 123 } },
       message: { recipient: { chat_id: 1 } }
     })
-    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Рассылка'))
-    assert.ok(responseCall, 'broadcast response not found')
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Рассылки'))
+    assert.ok(responseCall, 'broadcast_menu response not found')
     const buttons = responseCall.body.attachments[0].payload.buttons.flat()
     assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
   })

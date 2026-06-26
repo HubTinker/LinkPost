@@ -16,6 +16,12 @@ import {
   getLinksRankedBySubs,
   daysAgo
 } from '../lib/storage.js'
+import {
+  createBroadcast, getBroadcast, updateBroadcast, deleteBroadcast,
+  getAllBroadcasts, getScheduledBroadcasts,
+  markSent, markDelivered, markOpened, markUnsubbed,
+  getBroadcastStats
+} from '../lib/broadcast.js'
 
 const app = new Hono()
 
@@ -77,7 +83,7 @@ async function showAdminMenu (chatId) {
        { type: 'callback', text: '➕ Создать', data: 'create' }],
       [{ type: 'callback', text: '👥 Пользователи', data: 'users' },
        { type: 'callback', text: '📊 Статистика', data: 'stats' }],
-      [{ type: 'callback', text: '📨 Рассылка', data: 'broadcast' }]
+      [{ type: 'callback', text: '📨 Рассылка', data: 'broadcast_menu' }]
     ]
   )
 }
@@ -322,10 +328,42 @@ async function handleCallbackQuery (update) {
     ])
   }
 
-  if (cb.payload === 'broadcast') {
-    return sendMessageWithKeyboard(chatId, '📨 Рассылка пока не реализована.', [
-      [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
-    ])
+  if (cb.payload === 'broadcast_menu') {
+    let stats = { draft: 0, scheduled: 0, sending: 0, sent: 0, cancelled: 0 }
+    try {
+      const all = await getAllBroadcasts()
+      for (const b of all) {
+        if (stats[b.status] !== undefined) stats[b.status]++
+      }
+    } catch (e) {
+      alog('WARN', 'broadcast_menu: failed to load broadcasts', e.message)
+    }
+    return sendMessageWithKeyboard(chatId,
+      '📨 Рассылки\n\n' +
+      `📝 Черновики: ${stats.draft}\n` +
+      `⏳ Запланировано: ${stats.scheduled}\n` +
+      `📤 Отправляется: ${stats.sending}\n` +
+      `✅ Отправлено: ${stats.sent}\n` +
+      `⏸ Отменено: ${stats.cancelled}`,
+      [
+        [{ type: 'callback', text: '📝 Новая рассылка', data: 'broadcast_create' }],
+        [{ type: 'callback', text: '📋 Список рассылок', data: 'broadcast_list' }],
+        [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+      ]
+    )
+  }
+
+  if (cb.payload === 'broadcast_create') {
+    const draft = await createBroadcast({
+      text: '',
+      created_by: userId
+    })
+    return sendMessageWithKeyboard(chatId,
+      '📝 Новая рассылка (шаг 1/4)\n\n' +
+      'Введите текст сообщения (поддерживается Markdown):\n\n' +
+      `ID черновика: ${draft.id}`,
+      [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+    )
   }
 
   if (cb.payload === 'stats') {
