@@ -64,6 +64,22 @@ function formatBroadcastPreview (b) {
   return out
 }
 
+function statusEmoji (s) {
+  return { draft: '📝', scheduled: '⏳', sending: '📤', sent: '✅', cancelled: '⏸' }[s] || '❓'
+}
+function statusLabel (s) {
+  return { draft: 'Черновик', scheduled: 'Запланирована', sending: 'Отправляется', sent: 'Отправлена', cancelled: 'Остановлена' }[s] || s
+}
+function formatBroadcastDetail (b) {
+  let out = `📨 Рассылка #${b.id}\n`
+  out += `📅 Статус: ${statusLabel(b.status)}\n`
+  out += `📝 Текст: ${(b.text || '(нет)').slice(0, 150)}${(b.text?.length || 0) > 150 ? '...' : ''}\n`
+  out += `📷 Изображений: ${b.images?.length || 0}\n`
+  out += `🔘 Кнопок: ${b.buttons?.length || 0}\n`
+  if (b.scheduled_at) out += `🕐 Запланирована: ${new Date(b.scheduled_at).toLocaleString('ru')}\n`
+  return out
+}
+
 const DENY = (chatId) =>
   sendMessage(chatId, '⛔ Эта команда доступна только администратору.')
 
@@ -650,6 +666,98 @@ async function handleCallbackQuery (update) {
     return sendMessageWithKeyboard(chatId,
       '📅 Введите дату и время в формате:\n\nДД.ММ.ГГГГ ЧЧ:ММ\n\nПример: 31.12.2026 18:00',
       [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+    )
+  }
+
+  if (cb.payload === 'broadcast_list') {
+    const broadcasts = await getAllBroadcasts()
+    if (!broadcasts.length) {
+      return sendMessageWithKeyboard(chatId, '📭 Нет рассылок.', [
+        [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
+      ])
+    }
+    const buttons = broadcasts.slice(0, 10).map(b => [
+      { type: 'callback', text: `${statusEmoji(b.status)} ${b.id}`, data: `broadcast_view:${b.id}` }
+    ])
+    buttons.push([{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }])
+    return sendMessageWithKeyboard(chatId, '📋 Рассылки:', buttons)
+  }
+
+  if (cb.payload.startsWith('broadcast_view:')) {
+    const bid = cb.payload.slice('broadcast_view:'.length)
+    const b = await getBroadcast(bid)
+    if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
+
+    const btnRows = []
+    if (b.status === 'draft') {
+      btnRows.push([{ type: 'callback', text: '✏️ Редактировать', data: `broadcast_edit:${bid}` }])
+    }
+    if (b.status === 'sending') {
+      btnRows.push([{ type: 'callback', text: '⏸ Остановить', data: `broadcast_stop:${bid}` }])
+    }
+    if (b.status === 'cancelled') {
+      btnRows.push([{ type: 'callback', text: '▶️ Возобновить', data: `broadcast_resume:${bid}` }])
+    }
+    btnRows.push([{ type: 'callback', text: '📊 Статистика', data: `broadcast_stats:${bid}` }])
+    btnRows.push([{ type: 'callback', text: '❌ Удалить', data: `broadcast_delete:${bid}` }])
+    btnRows.push([{ type: 'callback', text: '🔙 К списку', data: 'broadcast_list' }])
+
+    return sendMessageWithKeyboard(chatId, formatBroadcastDetail(b), btnRows)
+  }
+
+  if (cb.payload.startsWith('broadcast_delete:')) {
+    const bid = cb.payload.slice('broadcast_delete:'.length)
+    return sendMessageWithKeyboard(chatId,
+      `🗑 Удалить рассылку #${bid}?`,
+      [
+        [
+          { type: 'callback', text: '✅ Да', data: `broadcast_delete_confirm:${bid}` },
+          { type: 'callback', text: '❌ Нет', data: `broadcast_view:${bid}` }
+        ]
+      ]
+    )
+  }
+
+  if (cb.payload.startsWith('broadcast_delete_confirm:')) {
+    const bid = cb.payload.slice('broadcast_delete_confirm:'.length)
+    await deleteBroadcast(bid)
+    alog('DEBUG', 'broadcast_delete_confirm: deleted %s', bid)
+    return sendMessageWithKeyboard(chatId, `🗑 Рассылка #${bid} удалена.`, [
+      [{ type: 'callback', text: '🔙 К списку', data: 'broadcast_list' }]
+    ])
+  }
+
+  if (cb.payload.startsWith('broadcast_stop:')) {
+    const bid = cb.payload.slice('broadcast_stop:'.length)
+    await updateBroadcast(bid, { status: 'cancelled' })
+    alog('DEBUG', 'broadcast_stop: stopped %s', bid)
+    return sendMessageWithKeyboard(chatId, `⏸ Рассылка #${bid} остановлена.`, [
+      [{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]
+    ])
+  }
+
+  if (cb.payload.startsWith('broadcast_resume:')) {
+    const bid = cb.payload.slice('broadcast_resume:'.length)
+    await updateBroadcast(bid, { status: 'scheduled', scheduled_at: Date.now() })
+    alog('DEBUG', 'broadcast_resume: resumed %s', bid)
+    return sendMessageWithKeyboard(chatId, `▶️ Рассылка #${bid} возобновлена.`, [
+      [{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]
+    ])
+  }
+
+  if (cb.payload.startsWith('broadcast_edit:')) {
+    const bid = cb.payload.slice('broadcast_edit:'.length)
+    const b = await getBroadcast(bid)
+    if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
+    if (b.status !== 'draft') {
+      return sendMessage(chatId, '⚠️ Редактировать можно только черновики.')
+    }
+    await updateBroadcast(bid, { text: '', _images_done: false, _buttons_done: false, _schedule_pending: false, images: [], buttons: [] })
+    return sendMessageWithKeyboard(chatId,
+      '📝 Редактирование (шаг 1/4)\n\n' +
+      'Введите новый текст сообщения:\n\n' +
+      `ID: ${bid}`,
+      [[{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]]
     )
   }
 
