@@ -13,6 +13,7 @@ import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
   saveUser, getUserCount, reactivateUser,
   getLinkSubCount, getLinkAge, getDailyStat, getDailyTotal, getStatRange, getTotalRange, getLinkCount,
+  getLinksRankedBySubs,
   daysAgo
 } from '../lib/storage.js'
 
@@ -330,7 +331,17 @@ async function handleCallbackQuery (update) {
   }
 
   if (cb.payload === 'stats') {
-    console.log('[API] callback: stats → общая статистика')
+    alog('DEBUG', ' callback: stats → подменю')
+    return sendMessageWithKeyboard(chatId, '📊 Статистика\n\nВыберите раздел:', [
+      [{ type: 'callback', text: '📈 Общая', data: 'stats_general' }],
+      [{ type: 'callback', text: '🔑 По ключу', data: 'stats_by_key' }],
+      [{ type: 'callback', text: '🏆 Топ ключей', data: 'stats_top' }],
+      [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+    ])
+  }
+
+  if (cb.payload === 'stats_general') {
+    alog('DEBUG', ' callback: stats_general → общая статистика')
     const totalUsers = await getUserCount()
     const totalLinks = await getLinkCount()
     const todayTotal = await getDailyTotal(daysAgo(0))
@@ -345,6 +356,76 @@ async function handleCallbackQuery (update) {
     msg += `📈 Новых за неделю: +${weekTotal}\n`
     msg += `🔑 Активных связок: ${totalLinks}`
 
+    return sendMessageWithKeyboard(chatId, msg, [
+      [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+    ])
+  }
+
+  if (cb.payload === 'stats_by_key') {
+    alog('DEBUG', ' callback: stats_by_key → список ключей')
+    const links = await getAllLinks()
+    if (!links.length) {
+      return sendMessageWithKeyboard(chatId, '📭 Нет активных связок.', [
+        [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+      ])
+    }
+    const buttons = []
+    for (let i = 0; i < links.length; i += 2) {
+      const row = [{ type: 'callback', text: `🔑 ${links[i].key}`, data: `stats_key:${links[i].key}` }]
+      if (links[i + 1]) {
+        row.push({ type: 'callback', text: `🔑 ${links[i + 1].key}`, data: `stats_key:${links[i + 1].key}` })
+      }
+      buttons.push(row)
+    }
+    buttons.push([{ type: 'callback', text: '🔙 Назад', data: 'back' }])
+    return sendMessageWithKeyboard(chatId, `🔑 Выберите ключ (${links.length}):`, buttons)
+  }
+
+  if (cb.payload.startsWith('stats_key:')) {
+    const key = cb.payload.slice('stats_key:'.length)
+    alog('DEBUG', ' callback: stats_key → key=%s', key)
+    const link = await getLink(key)
+    if (!link) {
+      return sendMessageWithKeyboard(chatId, `❌ Ключ "${key}" не найден.`, [
+        [{ type: 'callback', text: '🔙 К списку', data: 'stats_by_key' }]
+      ])
+    }
+    const total = await getLinkSubCount(key)
+    const today = await getDailyStat(key, daysAgo(0))
+    const yesterday = await getDailyStat(key, daysAgo(1))
+    const weekRange = await getStatRange(key, daysAgo(6), daysAgo(0))
+    const weekTotal = weekRange.reduce((s, d) => s + d.count, 0)
+    const age = await getLinkAge(key)
+
+    let msg = `📊 Статистика ключа «${key}»\n\n`
+    msg += `👥 Всего: ${total}\n`
+    msg += `📅 Сегодня: +${today}\n`
+    msg += `📆 Вчера: +${yesterday}\n`
+    msg += `📈 За неделю: +${weekTotal}\n`
+    if (age != null) msg += `🕐 Возраст ключа: ${age} дн.\n`
+    msg += `\n🔗 ${link.url}`
+
+    return sendMessageWithKeyboard(chatId, msg, [
+      [
+        { type: 'callback', text: '🗑 Удалить', data: `del:${key}` },
+        { type: 'callback', text: '🔙 К списку', data: 'stats_by_key' }
+      ]
+    ])
+  }
+
+  if (cb.payload === 'stats_top') {
+    alog('DEBUG', ' callback: stats_top → рейтинг ключей')
+    const ranked = await getLinksRankedBySubs()
+    if (!ranked.length) {
+      return sendMessageWithKeyboard(chatId, '📭 Нет активных связок.', [
+        [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+      ])
+    }
+    const top10 = ranked.slice(0, 10)
+    let msg = '🏆 Топ ключей по подписчикам\n\n'
+    top10.forEach((l, i) => {
+      msg += `${i + 1}. 🔑 ${l.key} → 👥 ${l.subCount}\n`
+    })
     return sendMessageWithKeyboard(chatId, msg, [
       [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
     ])
