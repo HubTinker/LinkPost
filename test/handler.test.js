@@ -98,7 +98,7 @@ describe('handleMessage commands', () => {
     assert.ok(responseCall, 'success response not found')
   })
 
-  it('/setlink should be denied for non-admin', async () => {
+  it('/setlink should be silently ignored for non-admin', async () => {
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/setlink test https://example.com Hello!' } },
@@ -106,8 +106,8 @@ describe('handleMessage commands', () => {
     })
     const saved = await kv.get('link:test')
     assert.equal(saved, null, 'link should not be saved')
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('⛔'))
-    assert.ok(responseCall, 'deny response not found')
+    const msgCalls = fetchCalls.filter(c => c.body.text)
+    assert.equal(msgCalls.length, 0, 'non-admin should get no response')
   })
 
   it('/setlink should validate URL format', async () => {
@@ -178,15 +178,15 @@ describe('handleMessage commands', () => {
     assert.ok(responseCall, 'not found warning not found')
   })
 
-  it('/dellink should be denied for non-admin (not owner)', async () => {
+  it('/dellink should be silently ignored for non-admin (not owner)', async () => {
     await setLinkFromStorage('test', 'https://example.com', 'Msg', 123)
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/dellink test' } },
       user: { user_id: 999 }
     })
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('удалять'))
-    assert.ok(responseCall, 'ownership deny response not found')
+    const msgCalls = fetchCalls.filter(c => c.body.text)
+    assert.equal(msgCalls.length, 0, 'non-admin should get no response')
   })
 
   it('/links should list all links', async () => {
@@ -215,14 +215,14 @@ describe('handleMessage commands', () => {
     assert.ok(responseCall, 'empty state not found')
   })
 
-  it('/links for non-admin should show empty list when no owned links', async () => {
+  it('/links for non-admin should be silently ignored', async () => {
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/links' } },
       user: { user_id: 999 }
     })
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('📭'))
-    assert.ok(responseCall, 'empty state not found for non-admin')
+    const msgCalls = fetchCalls.filter(c => c.body.text)
+    assert.equal(msgCalls.length, 0, 'non-admin should get no response')
   })
 
   it('/users should return user count', async () => {
@@ -241,14 +241,14 @@ describe('handleMessage commands', () => {
     )
   })
 
-  it('/users should be denied for non-admin', async () => {
+  it('/users should be silently ignored for non-admin', async () => {
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/users' } },
       user: { user_id: 999 }
     })
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('⛔'))
-    assert.ok(responseCall, 'deny response not found')
+    const msgCalls = fetchCalls.filter(c => c.body.text)
+    assert.equal(msgCalls.length, 0, 'non-admin should get no response')
   })
 })
 
@@ -434,23 +434,23 @@ describe('callback_query handling', () => {
     assert.ok(responseCall.body.text.includes('key:sub'), 'should mention full key with colon')
   })
 
-  it('should deny callback for non-admin', async () => {
+  it('should silently ignore callback for non-admin', async () => {
     await handleCallbackQuery({
       callback: { payload: 'del:test', user: { user_id: 999 } },
       message: { recipient: { chat_id: 1 } }
     })
-    const responseCall = fetchCalls.find(c => c.body?.text?.includes('⛔'))
-    assert.ok(responseCall, 'deny response not found')
+    const msgCalls = fetchCalls.filter(c => c.body.text)
+    assert.equal(msgCalls.length, 0, 'non-admin should get no response')
   })
 })
 
-describe('link creator ownership in handlers', () => {
+describe('non-admin commands are silently ignored', () => {
   beforeEach(() => {
     fetchCalls = []
     kv._clear()
   })
 
-  it('/links for non-admin should show only owned links', async () => {
+  it('/links should be silently ignored for non-admin', async () => {
     await setLinkFromStorage('a', 'https://a.com', 'A', 999)
     await setLinkFromStorage('b', 'https://b.com', 'B', 123)
     await handleMessage({
@@ -458,31 +458,30 @@ describe('link creator ownership in handlers', () => {
       message: { body: { text: '/links' } },
       user: { user_id: 999 }
     })
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('a.com'))
-    assert.ok(responseCall, 'should show owned link a.com')
-    assert.ok(!responseCall.body.text.includes('b.com'), 'should NOT show link b.com owned by 123')
+    const msgCalls = fetchCalls.filter(c => c.body.text)
+    assert.equal(msgCalls.length, 0, 'non-admin should get no response')
   })
 
-  it('/dellink should allow non-admin to request delete of own key', async () => {
+  it('/dellink should be silently ignored for non-admin (own key)', async () => {
     await setLinkFromStorage('mykey', 'https://x.com', 'Msg', 999)
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/dellink mykey' } },
       user: { user_id: 999 }
     })
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('🗑 Удалить'))
-    assert.ok(responseCall, 'should show confirmation for own key deletion')
+    const msgCalls = fetchCalls.filter(c => c.body.text)
+    assert.equal(msgCalls.length, 0, 'non-admin should get no response')
   })
 
-  it('/dellink should deny non-admin from deleting others key', async () => {
+  it('/dellink should be silently ignored for non-admin (others key)', async () => {
     await setLinkFromStorage('adminkey', 'https://x.com', 'Msg', 123)
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/dellink adminkey' } },
       user: { user_id: 999 }
     })
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('удалять'))
-    assert.ok(responseCall, 'should deny deletion of others key')
+    const msgCalls = fetchCalls.filter(c => c.body.text)
+    assert.equal(msgCalls.length, 0, 'non-admin should get no response')
   })
 
   it('/setlink for admin should store creator_id', async () => {
@@ -524,15 +523,15 @@ describe('/stats command', () => {
     assert.ok(responseCall.body.text.includes('Всего:'), 'should show total')
   })
 
-  it('/stats for non-admin should deny', async () => {
+  it('/stats should be silently ignored for non-admin', async () => {
     await kv.set('link:testkey', { url: 'https://x.com', message: 'Msg', created_at: Date.now() })
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/stats testkey' } },
       user: { user_id: 999 }
     })
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('⛔'))
-    assert.ok(responseCall, 'deny response not found')
+    const msgCalls = fetchCalls.filter(c => c.body.text)
+    assert.equal(msgCalls.length, 0, 'non-admin should get no response')
   })
 
   it('/stats without key should show format help', async () => {

@@ -156,8 +156,10 @@ async function handleMessage (update) {
     return handleBotStarted({ chat_id, user, payload: null })
   }
 
+  // Не-админы — молча игнорируем все команды (без сообщений об ошибках)
+  if (!isAdmin(userId) && text.startsWith('/')) return
+
   if (text.startsWith('/setlink')) {
-    if (!isAdmin(userId)) return DENY(chat_id)
     const [key, url, ...rest] = parseArgs(text)
     if (!key || !url || !rest.length) {
       return sendMessage(chat_id,
@@ -237,13 +239,11 @@ async function handleMessage (update) {
   }
 
   if (text.startsWith('/users')) {
-    if (!isAdmin(userId)) return DENY(chat_id)
     const count = await getUserCount()
     return sendMessage(chat_id, `👥 В базе ${count} пользователей.`)
   }
 
   if (text.startsWith('/stats')) {
-    if (!isAdmin(userId)) return DENY(chat_id)
     const [key] = parseArgs(text)
     if (!key) {
       return sendMessage(chat_id,
@@ -290,9 +290,7 @@ async function handleCallbackQuery (update) {
 
   const userId = cb.user.user_id
 
-  if (!isAdmin(userId)) {
-    return sendMessage(chatId, '⛔ Эта команда доступна только администратору.')
-  }
+  if (!isAdmin(userId)) return
 
   if (cb.payload === 'links') {
     const links = await getAllLinks()
