@@ -555,7 +555,22 @@ describe('/stats command', () => {
     assert.ok(responseCall, 'not found error not found')
   })
 
-  it('callback stats should show general statistics', async () => {
+  it('callback stats should show submenu with three buttons', async () => {
+    const { handleCallbackQuery } = await import('../api/index.js')
+    await handleCallbackQuery({
+      callback: { payload: 'stats', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('Статистика'))
+    assert.ok(responseCall, 'stats submenu response not found')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'stats_general'), 'should have stats_general button')
+    assert.ok(buttons.some(b => b.payload === 'stats_by_key'), 'should have stats_by_key button')
+    assert.ok(buttons.some(b => b.payload === 'stats_top'), 'should have stats_top button')
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+  })
+
+  it('callback stats_general should show general statistics', async () => {
     await kv.sadd('users_all', '1')
     await kv.sadd('users_all', '2')
     await kv.incr('stats:new:total:' + daysAgo(0))
@@ -564,7 +579,7 @@ describe('/stats command', () => {
 
     const { handleCallbackQuery } = await import('../api/index.js')
     await handleCallbackQuery({
-      callback: { payload: 'stats', user: { user_id: 123 } },
+      callback: { payload: 'stats_general', user: { user_id: 123 } },
       message: { recipient: { chat_id: 1 } }
     })
     const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('Общая статистика'))
@@ -572,5 +587,103 @@ describe('/stats command', () => {
     assert.ok(responseCall.body.text.includes('пользователей'), 'should show total users')
     const buttons = responseCall.body.attachments[0].payload.buttons.flat()
     assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+  })
+
+  it('callback stats_by_key should show key buttons', async () => {
+    await kv.set('link:a', { url: 'https://a.com', message: 'A' })
+    await kv.sadd('links_all', 'a')
+    await kv.set('link:b', { url: 'https://b.com', message: 'B' })
+    await kv.sadd('links_all', 'b')
+
+    const { handleCallbackQuery } = await import('../api/index.js')
+    await handleCallbackQuery({
+      callback: { payload: 'stats_by_key', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('Выберите ключ'))
+    assert.ok(responseCall, 'stats_by_key response not found')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'stats_key:a'), 'should have stats_key:a button')
+    assert.ok(buttons.some(b => b.payload === 'stats_key:b'), 'should have stats_key:b button')
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+  })
+
+  it('callback stats_by_key without links should show empty state', async () => {
+    const { handleCallbackQuery } = await import('../api/index.js')
+    await handleCallbackQuery({
+      callback: { payload: 'stats_by_key', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('📭'))
+    assert.ok(responseCall, 'empty state not found')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+  })
+
+  it('callback stats_key:xxx should show detailed key stats', async () => {
+    await kv.set('link:vip', { url: 'https://vip.com', message: 'VIP', created_at: Date.now() - 86400000 * 2 })
+    await kv.sadd('links_all', 'vip')
+    await kv.sadd('link_subs:vip', '100')
+    await kv.sadd('link_subs:vip', '200')
+    await kv.incr('stats:new:vip:' + daysAgo(0))
+    await kv.incr('stats:new:vip:' + daysAgo(0))
+    await kv.incr('stats:new:vip:' + daysAgo(1))
+
+    const { handleCallbackQuery } = await import('../api/index.js')
+    await handleCallbackQuery({
+      callback: { payload: 'stats_key:vip', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('vip'))
+    assert.ok(responseCall, 'stats_key response not found')
+    assert.ok(responseCall.body.text.includes('Всего:'), 'should show total')
+    assert.ok(responseCall.body.text.includes('Сегодня:'), 'should show today')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'del:vip'), 'should have delete button')
+    assert.ok(buttons.some(b => b.payload === 'stats_by_key'), 'should have back to list button')
+  })
+
+  it('callback stats_key:nonexistent should show error', async () => {
+    const { handleCallbackQuery } = await import('../api/index.js')
+    await handleCallbackQuery({
+      callback: { payload: 'stats_key:ghost', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('не найден'))
+    assert.ok(responseCall, 'not found error not found')
+    assert.ok(responseCall.body.text.includes('ghost'), 'should mention key name')
+  })
+
+  it('callback stats_top should show ranked keys', async () => {
+    await kv.set('link:a', { url: 'https://a.com', message: 'A', created_at: Date.now() })
+    await kv.sadd('links_all', 'a')
+    await kv.set('link:b', { url: 'https://b.com', message: 'B', created_at: Date.now() })
+    await kv.sadd('links_all', 'b')
+    await kv.sadd('link_subs:a', '1')
+    await kv.sadd('link_subs:a', '2')
+    await kv.sadd('link_subs:a', '3')
+    await kv.sadd('link_subs:b', '10')
+
+    const { handleCallbackQuery } = await import('../api/index.js')
+    await handleCallbackQuery({
+      callback: { payload: 'stats_top', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('Топ ключей'))
+    assert.ok(responseCall, 'stats_top response not found')
+    assert.ok(responseCall.body.text.includes('a'), 'should list key a')
+    assert.ok(responseCall.body.text.includes('b'), 'should list key b')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+  })
+
+  it('callback stats_top without links should show empty state', async () => {
+    const { handleCallbackQuery } = await import('../api/index.js')
+    await handleCallbackQuery({
+      callback: { payload: 'stats_top', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('📭'))
+    assert.ok(responseCall, 'empty state not found')
   })
 })

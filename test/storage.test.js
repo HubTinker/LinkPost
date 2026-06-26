@@ -9,6 +9,7 @@ const {
   markInactive, reactivateUser,
   getLinkAge, getLinkSubCount, getLinkCount,
   getDailyStat, getDailyTotal, getStatRange, getTotalRange,
+  getLinksRankedBySubs,
   daysAgo
 } = await import('../lib/storage.js')
 
@@ -308,5 +309,49 @@ describe('getLinkCount', () => {
   it('should return 0 for empty set', async () => {
     const count = await getLinkCount()
     assert.equal(count, 0)
+  })
+})
+
+describe('getLinksRankedBySubs', () => {
+  beforeEach(() => kv._clear())
+
+  it('should return links sorted by subscriber count descending', async () => {
+    await setLink('a', 'https://a.com', 'A', 123)
+    await setLink('b', 'https://b.com', 'B', 123)
+    await setLink('c', 'https://c.com', 'C', 123)
+    await kv.sadd('link_subs:a', '1')
+    await kv.sadd('link_subs:a', '2')
+    await kv.sadd('link_subs:a', '3')
+    await kv.sadd('link_subs:b', '10')
+    await kv.sadd('link_subs:b', '11')
+    // key 'c' has 0 subs
+
+    const ranked = await getLinksRankedBySubs()
+    assert.equal(ranked.length, 3)
+    assert.equal(ranked[0].key, 'a')
+    assert.equal(ranked[0].subCount, 3)
+    assert.equal(ranked[1].key, 'b')
+    assert.equal(ranked[1].subCount, 2)
+    assert.equal(ranked[2].key, 'c')
+    assert.equal(ranked[2].subCount, 0)
+  })
+
+  it('should return empty array when no links exist', async () => {
+    const ranked = await getLinksRankedBySubs()
+    assert.deepEqual(ranked, [])
+  })
+
+  it('should return links with zero subscribers at the end', async () => {
+    await setLink('x', 'https://x.com', 'X', 123)
+    await setLink('y', 'https://y.com', 'Y', 123)
+    await kv.sadd('link_subs:y', '1')
+    await kv.sadd('link_subs:y', '2')
+
+    const ranked = await getLinksRankedBySubs()
+    assert.equal(ranked.length, 2)
+    assert.equal(ranked[0].key, 'y')
+    assert.equal(ranked[0].subCount, 2)
+    assert.equal(ranked[1].key, 'x')
+    assert.equal(ranked[1].subCount, 0)
   })
 })
