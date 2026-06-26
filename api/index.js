@@ -8,7 +8,7 @@
 
 import { Hono } from 'hono'
 import { handle } from 'hono/vercel'
-import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead } from '../lib/max-api.js'
+import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead, sendBroadcastMessage } from '../lib/max-api.js'
 import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
   saveUser, getUserCount, reactivateUser,
@@ -48,6 +48,21 @@ const isAdmin = (userId) => ADMIN_IDS.includes(userId)
 
 /** Парсим аргументы: /command arg1 arg2 ...rest → ['arg1', 'arg2', ...] */
 const parseArgs = (text = '') => text.trim().split(/\s+/).slice(1)
+
+function parseRussianDate (str) {
+  const m = str.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/)
+  if (!m) return null
+  const [, day, month, year, hour, min] = m
+  const d = new Date(+year, +month - 1, +day, +hour, +min)
+  return isNaN(d.getTime()) ? null : d.getTime()
+}
+
+function formatBroadcastPreview (b) {
+  let out = '📨 Предпросмотр:\n\n' + (b.text || '(нет текста)')
+  if (b.images?.length) out += `\n\n📷 Изображений: ${b.images.length}`
+  if (b.buttons?.length) out += `\n\n🔘 Кнопок: ${b.buttons.length}`
+  return out
+}
 
 const DENY = (chatId) =>
   sendMessage(chatId, '⛔ Эта команда доступна только администратору.')
@@ -89,6 +104,15 @@ async function showAdminMenu (chatId) {
 }
 
 // ── Обработчики событий ───────────────────────────────────────────────────────
+
+async function getActiveDraft (userId) {
+  try {
+    const all = await getAllBroadcasts()
+    return all.find(b => b.status === 'draft' && b.created_by === userId) || null
+  } catch {
+    return null
+  }
+}
 
 async function handleBotStarted (update) {
   const { chat_id, user, payload } = update
@@ -280,6 +304,96 @@ async function handleMessage (update) {
     return sendMessage(chat_id, msg)
   }
 
+  // Broadcast draft flow (admin only)
+  if (isAdmin(userId)) {
+    const draft = await getActiveDraft(userId)
+    if (draft) {
+      // Step 1: collecting text
+      if (!draft.text) {
+        await updateBroadcast(draft.id, { text })
+        return sendMessageWithKeyboard(chat_id,
+          '✅ Текст сохранён!\n\n' +
+          'Теперь отправьте изображения (по одному) или нажмите «Готово» чтобы пропустить.\n\n' +
+          `ID: ${draft.id}`,
+          [
+            [{ type: 'callback', text: '✅ Готово', data: `broadcast_images_done:${draft.id}` }],
+            [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
+          ]
+        )
+      }
+
+      // Step 2: collecting images
+      if (draft.text && !draft._images_done) {
+        const photoAttachment = message?.attachments?.find(a => a.type === 'image')
+        if (photoAttachment) {
+          const fileId = photoAttachment.payload?.file_id || photoAttachment.payload?.id
+          if (fileId) {
+            const images = (draft.images || []).concat([fileId])
+            await updateBroadcast(draft.id, { images })
+            return sendMessage(chat_id, `📷 Изображение добавлено (${images.length}). Отправьте ещё или нажмите «Готово».`)
+          }
+        }
+        // If text but no image, ignore
+        return
+      }
+
+      // Step 3: collecting buttons
+      if (draft._images_done && !draft._buttons_done) {
+        const lines = text.split('\n').filter(l => l.trim())
+        const buttons = []
+        for (const line of lines) {
+          const parts = line.split('|')
+          if (parts.length >= 2) {
+            const btnText = parts[0].trim()
+            const btnUrl = parts.slice(1).join('|').trim()
+            if (btnText && btnUrl) {
+              try {
+                const u = new URL(btnUrl)
+                if (['http:', 'https:'].includes(u.protocol)) {
+                  buttons.push({ text: btnText, url: btnUrl })
+                }
+              } catch { /* skip invalid URLs */ }
+            }
+          }
+        }
+        if (buttons.length) {
+          await updateBroadcast(draft.id, { buttons, _buttons_done: true })
+        } else {
+          await updateBroadcast(draft.id, { _buttons_done: true })
+        }
+        // Proceed to schedule step
+        const updated = await getBroadcast(draft.id)
+        return sendMessageWithKeyboard(chat_id,
+          `🔘 Кнопки сохранены (${updated.buttons?.length || 0}).\n\n⏰ Шаг 4/4: Когда отправить?`,
+          [
+            [{ type: 'callback', text: '🚀 Отправить сейчас', data: `broadcast_send_now:${draft.id}` }],
+            [{ type: 'callback', text: '📅 Запланировать', data: `broadcast_schedule_input:${draft.id}` }],
+            [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
+          ]
+        )
+      }
+
+      // Step 4: scheduling — entering datetime
+      if (draft._buttons_done && draft._schedule_pending) {
+        const parsed = parseRussianDate(text)
+        if (!parsed || parsed <= Date.now()) {
+          return sendMessage(chat_id, '⚠️ Неверная дата или время в прошлом. Формат: ДД.ММ.ГГГГ ЧЧ:ММ\n\nПример: 31.12.2026 18:00')
+        }
+        await updateBroadcast(draft.id, {
+          status: 'scheduled',
+          scheduled_at: parsed,
+          _schedule_pending: false
+        })
+        return sendMessageWithKeyboard(chat_id,
+          `✅ Рассылка запланирована на ${text}`,
+          [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+        )
+      }
+
+      return
+    }
+  }
+
   // Игнорируем неизвестные команды
   if (text.startsWith('/')) return
 
@@ -465,6 +579,71 @@ async function handleCallbackQuery (update) {
     return sendMessageWithKeyboard(chatId, msg, [
       [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
     ])
+  }
+
+  if (cb.payload.startsWith('broadcast_images_done:')) {
+    const bid = cb.payload.slice('broadcast_images_done:'.length)
+    await updateBroadcast(bid, { _images_done: true })
+    return sendMessageWithKeyboard(chatId,
+      '🔘 Шаг 3/4: Кнопки\n\n' +
+      'Отправьте кнопки в формате:\n' +
+      'Текст кнопки | https://ссылка\n\n' +
+      'По одной кнопке на строку. До 5 кнопок.\n' +
+      'Нажмите «Готово» чтобы пропустить.',
+      [
+        [{ type: 'callback', text: '✅ Готово', data: `broadcast_buttons_done:${bid}` }],
+        [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
+      ]
+    )
+  }
+
+  if (cb.payload.startsWith('broadcast_buttons_done:')) {
+    const bid = cb.payload.slice('broadcast_buttons_done:'.length)
+    const b = await getBroadcast(bid)
+    if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
+    await updateBroadcast(bid, { _buttons_done: true })
+    return sendMessageWithKeyboard(chatId,
+      `🔘 Кнопки сохранены (${b.buttons?.length || 0}).\n\n⏰ Шаг 4/4: Когда отправить?`,
+      [
+        [{ type: 'callback', text: '🚀 Отправить сейчас', data: `broadcast_send_now:${bid}` }],
+        [{ type: 'callback', text: '📅 Запланировать', data: `broadcast_schedule_input:${bid}` }],
+        [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
+      ]
+    )
+  }
+
+  if (cb.payload.startsWith('broadcast_send_now:')) {
+    const bid = cb.payload.slice('broadcast_send_now:'.length)
+    const b = await getBroadcast(bid)
+    if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
+    return sendMessageWithKeyboard(chatId,
+      formatBroadcastPreview(b) + '\n\nОтправить сейчас?',
+      [
+        [{ type: 'callback', text: '✅ Подтвердить', data: `broadcast_confirm_now:${bid}` }],
+        [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
+      ]
+    )
+  }
+
+  if (cb.payload.startsWith('broadcast_confirm_now:')) {
+    const bid = cb.payload.slice('broadcast_confirm_now:'.length)
+    await updateBroadcast(bid, {
+      status: 'scheduled',
+      scheduled_at: Date.now()
+    })
+    return sendMessageWithKeyboard(chatId,
+      '✅ Рассылка запущена! Отправка начнётся в течение минуты.',
+      [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+    )
+  }
+
+  if (cb.payload.startsWith('broadcast_schedule_input:')) {
+    const bid = cb.payload.slice('broadcast_schedule_input:'.length)
+    await updateBroadcast(bid, { _schedule_pending: true })
+    return sendMessageWithKeyboard(chatId,
+      '📅 Введите дату и время в формате:\n\nДД.ММ.ГГГГ ЧЧ:ММ\n\nПример: 31.12.2026 18:00',
+      [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+    )
   }
 
   if (cb.payload === 'back') {
