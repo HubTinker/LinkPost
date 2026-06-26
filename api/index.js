@@ -49,14 +49,6 @@ const isAdmin = (userId) => ADMIN_IDS.includes(userId)
 /** Парсим аргументы: /command arg1 arg2 ...rest → ['arg1', 'arg2', ...] */
 const parseArgs = (text = '') => text.trim().split(/\s+/).slice(1)
 
-function parseRussianDate (str) {
-  const m = str.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/)
-  if (!m) return null
-  const [, day, month, year, hour, min] = m
-  const d = new Date(+year, +month - 1, +day, +hour, +min)
-  return isNaN(d.getTime()) ? null : d.getTime()
-}
-
 function formatBroadcastPreview (b) {
   let out = '📨 Предпросмотр:\n\n' + (b.text || '(нет текста)')
   if (b.images?.length) out += `\n\n📷 Изображений: ${b.images.length}`
@@ -395,32 +387,14 @@ async function handleMessage (update) {
         } else {
           await updateBroadcast(draft.id, { _buttons_done: true })
         }
-        // Proceed to schedule step
+        // Proceed to confirmation
         const updated = await getBroadcast(draft.id)
         return sendMessageWithKeyboard(chat_id,
-          `🔘 Кнопки сохранены (${updated.buttons?.length || 0}).\n\n⏰ Шаг 4/4: Когда отправить?`,
+          formatBroadcastPreview(updated) + '\n\nОтправить сейчас?',
           [
-            [{ type: 'callback', text: '🚀 Отправить сейчас', data: `broadcast_send_now:${draft.id}` }],
-            [{ type: 'callback', text: '📅 Запланировать', data: `broadcast_schedule_input:${draft.id}` }],
+            [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${draft.id}` }],
             [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
           ]
-        )
-      }
-
-      // Step 4: scheduling — entering datetime
-      if (draft._buttons_done && draft._schedule_pending) {
-        const parsed = parseRussianDate(text)
-        if (!parsed || parsed <= Date.now()) {
-          return sendMessage(chat_id, '⚠️ Неверная дата или время в прошлом. Формат: ДД.ММ.ГГГГ ЧЧ:ММ\n\nПример: 31.12.2026 18:00')
-        }
-        await updateBroadcast(draft.id, {
-          status: 'scheduled',
-          scheduled_at: parsed,
-          _schedule_pending: false
-        })
-        return sendMessageWithKeyboard(chat_id,
-          `✅ Рассылка запланирована на ${text}`,
-          [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
         )
       }
 
@@ -662,23 +636,9 @@ async function handleCallbackQuery (update) {
     if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
     await updateBroadcast(bid, { _buttons_done: true })
     return sendMessageWithKeyboard(chatId,
-      `🔘 Кнопки сохранены (${b.buttons?.length || 0}).\n\n⏰ Шаг 4/4: Когда отправить?`,
-      [
-        [{ type: 'callback', text: '🚀 Отправить сейчас', data: `broadcast_send_now:${bid}` }],
-        [{ type: 'callback', text: '📅 Запланировать', data: `broadcast_schedule_input:${bid}` }],
-        [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
-      ]
-    )
-  }
-
-  if (cb.payload.startsWith('broadcast_send_now:')) {
-    const bid = cb.payload.slice('broadcast_send_now:'.length)
-    const b = await getBroadcast(bid)
-    if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
-    return sendMessageWithKeyboard(chatId,
       formatBroadcastPreview(b) + '\n\nОтправить сейчас?',
       [
-        [{ type: 'callback', text: '✅ Подтвердить', data: `broadcast_confirm_now:${bid}` }],
+        [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${bid}` }],
         [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
       ]
     )
@@ -686,21 +646,54 @@ async function handleCallbackQuery (update) {
 
   if (cb.payload.startsWith('broadcast_confirm_now:')) {
     const bid = cb.payload.slice('broadcast_confirm_now:'.length)
-    await updateBroadcast(bid, {
-      status: 'scheduled',
-      scheduled_at: Date.now()
-    })
-    return sendMessageWithKeyboard(chatId,
-      '✅ Рассылка запущена! Отправка начнётся в течение минуты.',
-      [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-    )
-  }
+    const b = await getBroadcast(bid)
+    if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
 
-  if (cb.payload.startsWith('broadcast_schedule_input:')) {
-    const bid = cb.payload.slice('broadcast_schedule_input:'.length)
-    await updateBroadcast(bid, { _schedule_pending: true })
+    await updateBroadcast(bid, { status: 'scheduled', scheduled_at: Date.now() })
+    alog('DEBUG', 'broadcast_confirm_now: starting broadcast %s', bid)
+
+    // Send first batch inline
+    const users = await getAllUsers()
+    let cursor = await getCursor(bid)
+    const batchSize = 20
+    let sent = 0
+
+    for (let i = cursor; i < Math.min(cursor + batchSize, users.length); i++) {
+      const user = users[i]
+      try {
+        const alreadySent = await isSent(bid, user.user_id)
+        if (alreadySent) { cursor++; continue }
+        await sendBroadcastMessage(user.user_id, b)
+        await markSent(bid, user.user_id)
+        await markDelivered(bid, user.user_id)
+        sent++
+      } catch (err) {
+        console.error(`[broadcast] ${bid}: ERROR for userId=${user.user_id}: ${err.message}`)
+        // Leave cursor at this position, will retry
+        break
+      }
+      cursor++
+    }
+    await setCursor(bid, cursor)
+
+    if (cursor >= users.length) {
+      await updateBroadcast(bid, { status: 'sent' })
+      console.log(`[broadcast] ${bid}: completed (${users.length} users)`)
+      return sendMessageWithKeyboard(chatId,
+        `✅ Рассылка #${bid} завершена! Отправлено ${cursor} сообщений.`,
+        [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+      )
+    }
+
+    // Fire-and-forget: continue with next batch
+    const secret = process.env.SETUP_SECRET
+    if (secret) {
+      fetch(`/process-broadcasts?secret=${encodeURIComponent(secret)}`)
+        .catch(e => console.warn('[broadcast] chain call failed:', e.message))
+    }
+
     return sendMessageWithKeyboard(chatId,
-      '📅 Введите дату и время в формате:\n\nДД.ММ.ГГГГ ЧЧ:ММ\n\nПример: 31.12.2026 18:00',
+      `📤 Рассылка #${bid} запущена! Отправлено ${sent} из ${users.length}. Продолжаю...`,
       [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
     )
   }
@@ -811,7 +804,7 @@ async function handleCallbackQuery (update) {
     if (b.status !== 'draft') {
       return sendMessage(chatId, '⚠️ Редактировать можно только черновики.')
     }
-    await updateBroadcast(bid, { text: '', _images_done: false, _buttons_done: false, _schedule_pending: false, images: [], buttons: [] })
+    await updateBroadcast(bid, { text: '', _images_done: false, _buttons_done: false, images: [], buttons: [] })
     return sendMessageWithKeyboard(chatId,
       '📝 Редактирование (шаг 1/4)\n\n' +
       'Введите новый текст сообщения:\n\n' +
@@ -981,7 +974,11 @@ app.get('/process-broadcasts', async (c) => {
         console.log(`[broadcast] ${b.id}: completed (${users.length} users)`)
       } else {
         console.log(`[broadcast] ${b.id}: progress ${newCursor}/${users.length}`)
-        await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
+        // Fire-and-forget: continue with next batch
+        const host = c.req.header('host')
+        const scheme = c.req.header('x-forwarded-proto') || 'https'
+        fetch(`${scheme}://${host}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
+          .catch(e => console.warn('[broadcast] chain call failed:', e.message))
       }
 
       results.push({ id: b.id, sent: sentInBatch, cursor: newCursor, total: users.length })
