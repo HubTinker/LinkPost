@@ -15,11 +15,5 @@
       "src": "/(.*)",
       "dest": "api/index.js"
     }
-  ],
-  "crons": [
-    {
-      "path": "/process-broadcasts?secret=REPLACE_WITH_SETUP_SECRET",
-      "schedule": "* * * * *"
-    }
   ]
 }
