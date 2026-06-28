@@ -4,7 +4,7 @@ import assert from 'node:assert'
 import {
   createBroadcast, getBroadcast, updateBroadcast, deleteBroadcast,
   getAllBroadcasts, getScheduledBroadcasts,
-  markSent, isSent, markDelivered, markOpened, markUnsubbed,
+  markSent, isSent, markDelivered, markOpened, markUnsubbed, markFailed,
   getCursor, setCursor, getBroadcastStats
 } from '../lib/broadcast.js'
 
@@ -90,17 +90,92 @@ describe('Broadcast tracking', () => {
     assert.ok(!notSent)
   })
 
-  it('should mark delivered, opened, unsubbed', async () => {
+  it('should mark delivered, opened, unsubbed, and failed', async () => {
     const b = await createBroadcast({ text: 'Tracking', created_by: 123 })
     await markSent(b.id, 100)
     await markDelivered(b.id, 100)
     await markOpened(b.id, 100)
     await markUnsubbed(b.id, 200)
+    await markFailed(b.id, 300)
     const stats = await getBroadcastStats(b.id)
     assert.strictEqual(stats.sent, 1)
     assert.strictEqual(stats.delivered, 1)
     assert.strictEqual(stats.opened, 1)
     assert.strictEqual(stats.unsubbed, 1)
+    assert.strictEqual(stats.failed, 1)
+  })
+})
+
+describe('Broadcast failed tracking', () => {
+  beforeEach(async () => {
+    await kv._clear()
+  })
+
+  it('should mark failed for a user', async () => {
+    const b = await createBroadcast({ text: 'Fail me', created_by: 123 })
+    await markFailed(b.id, 100)
+    const stats = await getBroadcastStats(b.id)
+    assert.strictEqual(stats.failed, 1)
+  })
+
+  it('should not double-count failed for same user', async () => {
+    const b = await createBroadcast({ text: 'Fail me', created_by: 123 })
+    await markFailed(b.id, 100)
+    await markFailed(b.id, 100)
+    const stats = await getBroadcastStats(b.id)
+    assert.strictEqual(stats.failed, 1)
+  })
+
+  it('should count failed for different users', async () => {
+    const b = await createBroadcast({ text: 'Fail me', created_by: 123 })
+    await markFailed(b.id, 100)
+    await markFailed(b.id, 200)
+    const stats = await getBroadcastStats(b.id)
+    assert.strictEqual(stats.failed, 2)
+  })
+})
+
+describe('Broadcast stats aggregation', () => {
+  beforeEach(async () => {
+    await kv._clear()
+  })
+
+  it('should aggregate stats across multiple broadcasts', async () => {
+    const b1 = await createBroadcast({ text: 'First', created_by: 123 })
+    const b2 = await createBroadcast({ text: 'Second', created_by: 123 })
+
+    await markSent(b1.id, 1)
+    await markSent(b1.id, 2)
+    await markOpened(b1.id, 1)
+    await markFailed(b1.id, 3)
+
+    await markSent(b2.id, 10)
+    await markOpened(b2.id, 10)
+    await markUnsubbed(b2.id, 11)
+    await markUnsubbed(b2.id, 12)
+
+    const s1 = await getBroadcastStats(b1.id)
+    const s2 = await getBroadcastStats(b2.id)
+
+    assert.strictEqual(s1.sent, 2)
+    assert.strictEqual(s1.opened, 1)
+    assert.strictEqual(s1.failed, 1)
+    assert.strictEqual(s1.unsubbed, 0)
+
+    assert.strictEqual(s2.sent, 1)
+    assert.strictEqual(s2.opened, 1)
+    assert.strictEqual(s2.unsubbed, 2)
+    assert.strictEqual(s2.failed, 0)
+
+    const totalSent = s1.sent + s2.sent
+    const totalOpened = s1.opened + s2.opened
+    const totalUnsubbed = s1.unsubbed + s2.unsubbed
+    const totalFailed = s1.failed + s2.failed
+
+    assert.strictEqual(totalSent, 3)
+    assert.strictEqual(totalOpened, 2)
+    assert.strictEqual(totalUnsubbed, 2)
+    assert.strictEqual(totalFailed, 1)
   })
 })
 

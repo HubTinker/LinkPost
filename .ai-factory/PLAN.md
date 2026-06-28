@@ -1,95 +1,169 @@
-# План: Кнопочная статистика по ключам
+# План: Закрытие дыр в статистике рассылок
 
-Дата: 2026-06-26
-Режим: Fast
-Ветка: (текущая)
+Ветка: main | Дата: 2026-06-28
 
 ## Settings
 
-- **Тестирование:** Да
-- **Логирование:** Verbose (DEBUG)
-- **Документация:** Нет (warn-only)
+- **Тестирование:** да
+- **Логирование:** verbose (DEBUG)
+- **Документация:** warn-only
 
 ## Research Context
 
-> Тема из RESEARCH.md (неактуальна для этой задачи — перенесена отдельно). Контекст: бот уже имеет кнопку «📊 Статистика» с общей статистикой и команду `/stats <key>` для статистики по ключу. Нужно добавить кнопочную навигацию, чтобы всё было доступно через кнопки без ввода команд.
+Тема: Закрытие дыр в статистике рассылок
+Цель: Исправить три пробела в сборе и отображении статистики broadcast
 
-## Задача
+Ограничения:
+- Не менять структуру хранения broadcast в KV (key layout уже устоялся)
+- Статистика должна обновляться в реальном времени (никаких фоновых пересчётов)
+- Не ломать существующий flow черновиков и отправки
 
-Добавить кнопочные эквиваленты для всех команд статистики: подменю «📊 Статистика» с вариантами «Общая», «По ключу», «Топ ключей». Кнопка «По ключу» показывает список всех ключей — выбор любого показывает детальную статистику (аналог `/stats <key>`). Кнопка «Топ ключей» — рейтинг по количеству подписчиков.
+Решения:
+- Дыра 1 (markFailed): вызывать при ошибках отправки в process-broadcasts + first batch
+- Дыра 2 (итоговая сводка): после status='sent' отправлять админу сообщение с sent/opened/unsubbed
+- Дыра 3 (агрегация): новый callback stats_broadcasts_overall — общий охват, средний open rate, отписки
+- Итоговая сводка отправляется только created_by (не всем админам)
+- Агрегация вычисляется на лету (без отдельной KV-записи), по всем рассылкам без лимита
 
-## Задачи
+Сигналы успеха:
+- markFailed вызывается при ошибках отправки, scard :failed растёт
+- После завершения рассылки админ получает сообщение со статистикой
+- Появляется кнопка «📊 Общая статистика рассылок» с агрегированными цифрами
 
-### 1. Добавить `getLinksRankedBySubs()` в `lib/storage.js`
+## Tasks
 
-- [x] Создать функцию `getLinksRankedBySubs()`, которая:
-  - Получает все ключи через `getAllLinks()`
-  - Для каждого ключа получает `getLinkSubCount(key)`
-  - Сортирует по убыванию количества подписчиков
-  - Возвращает массив `[{ key, url, message, subCount, age }, ...]`
-- [x] Логирование: `log('DEBUG', ...)` — вход, количество найденных ключей, топ-3 результата
+### Этап 1: markFailed — фиксация ошибок отправки
 
-### 2. Переработать callback-меню «📊 Статистика» в `api/index.js`
+- [x] **Task 1: Вызов markFailed при ошибках отправки рассылки**
 
-- [x] Заменить текущий обработчик `stats` (строка 332): вместо вывода общей статистики — показать подменю с тремя кнопками:
-  - «📈 Общая» (`stats_general`)
-  - «🔑 По ключу» (`stats_by_key`)
-  - «🏆 Топ ключей» (`stats_top`)
-  - «🔙 Назад» (`back`)
-- [x] Добавить обработчик `stats_general` — перенести текущий код общей статистики (строки 333–350)
-- [x] Добавить обработчик `stats_by_key`:
-  - Получить `getAllLinks()`
-  - Если нет ключей — сообщение «📭 Нет активных связок» + кнопка «🔙 Назад»
-  - Иначе — список ключей кнопками, каждая кнопка = `stats_key:{key}`, текст кнопки = `🔑 {key}`
-  - Максимум 2 кнопки в ряду, снизу кнопка «🔙 Назад»
-- [x] Добавить обработчик `stats_key:{key}`:
-  - Получить `getLink(key)`, если нет → «❌ Ключ не найден»
-  - Вывести ту же статистику что `/stats <key>`: всего подписчиков, +сегодня, +вчера, +за неделю, возраст, ссылка
-  - Кнопки: «🗑 Удалить» (`del:{key}`) и «🔙 К списку» (`stats_by_key`)
-- [x] Добавить обработчик `stats_top`:
-  - Вызвать `getLinksRankedBySubs()`
-  - Вывести топ-10 (или меньше) строкой: `{i}. 🔑 {key} → 👥 {subCount}`
-  - Кнопка «🔙 Назад»
-- [x] Импортировать `getLinksRankedBySubs` из `../lib/storage.js`
-- [x] Логирование: `alog('DEBUG', ...)` на вход каждого нового обработчика, с payload и ключевыми параметрами
+  Файл: `api/index.js` (2 локации)
 
-### 3. Тесты для `getLinksRankedBySubs()` в `test/storage.test.js`
+  **Локация A — первый батч (broadcast_confirm_now, строка 670):**
+  В блоке `catch (err)` после `console.error` добавить:
+  ```js
+  await markFailed(bid, user.user_id).catch(() => {})
+  ```
+  Затем `break` (как сейчас), курсор не продвигается — сообщение будет переотправлено при следующем тике.
 
-- [x] Импортировать `getLinksRankedBySubs`
-- [x] Тест: возвращает ключи, отсортированные по убыванию подписчиков
-- [x] Тест: возвращает пустой массив при отсутствии ключей
-- [x] Тест: ключи без подписчиков идут в конце (subCount = 0)
+  **Локация B — цепной батч (process-broadcasts, строка 963):**
+  В блоке `catch (err)` после `console.error` добавить:
+  ```js
+  await markFailed(b.id, user.user_id).catch(() => {})
+  ```
+  Логика та же: курсор не продвигается, переотправка на следующем тике.
 
-### 4. Тесты для новых callback-обработчиков в `test/handler.test.js`
+  Логирование: `alog('INFO', 'broadcast %s: markFailed userId=%d', bid/b.id, user.user_id)`
 
-- [x] Тест: callback `stats` показывает подменю с тремя кнопками (`stats_general`, `stats_by_key`, `stats_top`) и кнопкой «Назад»
-- [x] Тест: callback `stats_general` показывает общую статистику с кнопкой «Назад»
-- [x] Тест: callback `stats_by_key` с ключами — показывает кнопки с именами ключей
-- [x] Тест: callback `stats_by_key` без ключей — показывает «📭 Нет активных связок»
-- [x] Тест: callback `stats_key:vip` — показывает детальную статистику ключа
-- [x] Тест: callback `stats_key:nonexistent` — показывает «❌ Ключ не найден»
-- [x] Тест: callback `stats_top` — показывает рейтинг ключей
-- [x] Тест: callback `stats_top` без ключей — показывает пустой список
+  **Проверка:** после ошибки отправки `scard(broadcast:<id>:failed)` возвращает 1.
 
-### 5. Проверка
+### Этап 2: Итоговая сводка после завершения
 
-- [x] `node --test test/storage.test.js` — все тесты проходят
-- [x] `node --test test/handler.test.js` — все тесты (включая новые) проходят
+- [x] **Task 2: Сообщение со статистикой при статусе sent**
+
+  Файл: `api/index.js` (2 локации)
+
+  Импорт: убедиться что `getBroadcastStats` и `createBroadcast` уже импортируются. `getBroadcastStats` уже есть в импорте (строка 23).
+
+  **Локация A — первый батч завершён (broadcast_confirm_now, строка 679-685):**
+  После `await updateBroadcast(bid, { status: 'sent' })` и перед `console.log`, получить `getBroadcastStats`, сформировать и отправить сообщение создателю:
+  ```js
+  const finalStats = await getBroadcastStats(bid)
+  const totalUsers = await getUserCount()
+  const openPct = finalStats.sent ? Math.round(finalStats.opened / finalStats.sent * 100) : 0
+  const unsubPct = finalStats.sent ? Math.round(finalStats.unsubbed / finalStats.sent * 100) : 0
+  const summaryMsg = `✅ Рассылка #${bid} завершена!\n\n` +
+    `📤 Отправлено: ${finalStats.sent} / ${totalUsers}\n` +
+    `👁 Открыто: ${finalStats.opened} (${openPct}%)\n` +
+    `🚫 Отписалось: ${finalStats.unsubbed} (${unsubPct}%)\n` +
+    `❌ Ошибок: ${finalStats.failed}`
+  await sendMessage(b.created_by, summaryMsg)
+  ```
+  Существующий `sendMessage(chatId, ...)` в ответе админу — оставить.
+
+  **Локация B — цепной батч завершён (process-broadcasts, строка 972-973):**
+  Аналогично: после `await updateBroadcast(b.id, { status: 'sent' })` отправить сводку `b.created_by`.
+
+  Логирование: `alog('INFO', 'broadcast %s: sent summary to creator=%d, stats=%j', bid, b.created_by, finalStats)`
+
+  **Проверка:** после завершения рассылки создатель получает сообщение со статистикой.
+
+### Этап 3: Агрегированная статистика по всем рассылкам
+
+- [x] **Task 3: Общая статистика рассылок — callback + кнопка**
+
+  Файл: `api/index.js`
+
+  **3a. Новый callback `stats_broadcasts_overall`:**
+  В `handleCallbackQuery` добавить обработку:
+  ```js
+  if (cb.payload === 'stats_broadcasts_overall') {
+    const all = await getAllBroadcasts()
+    let totalSent = 0, totalOpened = 0, totalUnsubbed = 0, totalFailed = 0, count = 0
+    for (const b of all) {
+      const s = await getBroadcastStats(b.id)
+      totalSent += s.sent
+      totalOpened += s.opened
+      totalUnsubbed += s.unsubbed
+      totalFailed += s.failed
+      if (s.sent > 0) count++
+    }
+    const avgOpenPct = totalSent ? Math.round(totalOpened / totalSent * 100) : 0
+    let msg = '📊 Общая статистика рассылок\n\n'
+    msg += `📨 Всего рассылок с отправкой: ${count}\n`
+    msg += `📤 Всего отправлено сообщений: ${totalSent}\n`
+    msg += `👁 Всего открытий: ${totalOpened} (средний ${avgOpenPct}%)\n`
+    msg += `🚫 Всего отписок: ${totalUnsubbed}\n`
+    msg += `❌ Всего ошибок: ${totalFailed}`
+    return sendMessageWithKeyboard(chatId, msg, [
+      [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+    ])
+  }
+  ```
+
+  **3b. Кнопка в меню статистики:**
+  В обработчик `cb.payload === 'stats'` (строка 516) добавить кнопку:
+  ```js
+  [{ type: 'callback', text: '📨 Рассылки', data: 'stats_broadcasts_overall' }],
+  ```
+  Разместить после `stats_top`, перед `back`.
+
+  Логирование: `alog('DEBUG', 'stats_broadcasts_overall: all=%d, withSent=%d, totalSent=%d', all.length, count, totalSent)`
+
+  **Проверка:** в меню Статистика → «📨 Рассылки» показывает агрегированные цифры.
+
+### Этап 4: Тесты
+
+- [x] **Task 4: Тесты на статистику рассылок**
+
+  Файл: `test/broadcast-stats.test.js` (новый)
+
+  Добавить тесты в существующий `describe('Broadcast tracking')` в `test/broadcast.test.js` (расширить существующий файл, не создавать новый):
+
+  1. **markFailed:**
+     - Создать broadcast, вызвать `markFailed(b.id, userId)`, проверить что `scard(:failed)` = 1
+     - Дважды вызвать `markFailed` для одного userId — всё ещё 1 (set)
+     - Два разных userId — `scard(:failed)` = 2
+
+  2. **getBroadcastStats после markFailed:**
+     - `markSent` + `markDelivered` + `markOpened` + `markUnsubbed` + `markFailed` для разных userId
+     - `getBroadcastStats` возвращает `{ sent: 1, delivered: 1, opened: 1, unsubbed: 1, failed: 1 }`
+
+  3. **Агрегация (unit-тест на уровне KV):**
+     - Создать 2 broadcast, наполнить разной статистикой
+     - Вызвать `getBroadcastStats` для каждого и просуммировать — проверить что сумма корректна
+
+  Логирование: `console.log` в тестах по необходимости.
 
 ## Commit Plan
 
-| # | Задачи | Сообщение |
-|---|--------|-----------|
-| 1 | 1, 2 | `feat(storage): getLinksRankedBySubs + кнопочное меню статистики` |
-| 2 | 3, 4, 5 | `test: тесты на getLinksRankedBySubs и callback-обработчики статистики` |
+Менее 5 задач — все изменения в одном коммите в конце.
 
-
+Сообщение коммита:
 ```
-feat: кнопочная статистика по ключам с рейтингом
+fix: закрыть дыры в статистике рассылок (markFailed, сводка, агрегация)
 
-- storage.js: getLinksRankedBySubs() — ключи, отсортированные по подписчикам
-- api/index.js: подменю «Статистика» → Общая / По ключу / Топ ключей
-- Кнопка «По ключу»: выбор ключа → детальная статистика (аналог /stats <key>)
-- Кнопка «Топ ключей»: рейтинг по количеству подписчиков
-- Тесты на новый метод хранилища и callback-обработчики
+- markFailed вызывается при ошибках отправки в first/chain batch
+- итоговая сводка со статистикой отправляется создателю при status=sent
+- добавлена агрегированная статистика по всем рассылкам в меню
+- тесты на markFailed, getBroadcastStats и агрегацию
 ```

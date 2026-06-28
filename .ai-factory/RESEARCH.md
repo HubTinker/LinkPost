@@ -1,35 +1,29 @@
 # Research
 
-Updated: 2026-06-07 18:10
+Updated: 2026-06-28 12:00
 Status: active
 
 ## Active Summary (input for /aif-plan)
 <!-- aif:active-summary:start -->
-Topic: Добавление владельца (creator) к связкам ключ-ссылка
-Goal: Сохранять creator_id при создании ключа, фильтровать ключи по создателю, подготовить базу к multi-user сценарию
+Topic: Закрытие дыр в статистике рассылок
+Goal: Исправить три пробела в сборе и отображении статистики broadcast
 Constraints:
-  - Не потерять существующих подписанных пользователей (users_all, user:*)
-  - Бекап всей KV-базы перед миграцией
+  - Не менять структуру хранения broadcast в KV (key layout уже устоялся)
+  - Статистика должна обновляться в реальном времени (никаких фоновых пересчётов)
+  - Не ломать существующий flow черновиков и отправки
 Decisions:
-  - creator_id добавляется в value link:<key> → { url, message, creator_id }
-  - setLink(key, url, msg, creatorId) — новый параметр
-  - getLinksByCreator(userId) — новый метод
-  - Индекс user_links:<userId> (set) создаётся сразу при setLink
-  - Миграция: ключи без creator_id → назначить первому админу из ADMIN_IDS
-  - Права: админы видят/удаляют всё, создатели — только свои ключи
-  - Роли в будущем уйдут в KV (не только ADMIN_IDS env), но в рамках этой задачи isAdmin() остаётся
-  - /links для админов: все ключи (с пометкой создателя); для пользователей: только user_links:<userId>
-  - /dellink: админ может удалить любой; пользователь — только свой (проверка creator_id)
+  - Дыра 1 (markFailed): вызывать при ошибках отправки в process-broadcasts + first batch
+  - Дыра 2 (итоговая сводка): после status='sent' отправлять админу сообщение с sent/opened/unsubbed
+  - Дыра 3 (агрегация): новый callback stats_broadcasts_overall — общий охват, средний open rate, отписки
 Open questions:
-  - Формат бекапа: прямой дамп всех ключей через @vercel/kv или сторонний инструмент?
-  - Нужна ли обратная совместимость getLink() (без фильтра по creator — для deep-link резолвинга)?
+  - Кому слать итоговую сводку? Только created_by или всем админам?
+  - Нужен ли лимит на кол-во рассылок в агрегированной статистике (все / последние 30 дней)?
+  - Делать ли агрегацию через отдельную KV-запись или вычислять на лету?
 Success signals:
-  - Бекап базы сохранён перед миграцией
-  - setLink принимает и сохраняет creator_id
-  - Миграция существующих ключей без потерь
-  - /links показывает админу все ключи с creator, пользователю — только свои
-  - Индекс user_links:<userId> наполняется корректно
-Next step: /aif-plan fast для реализации изменений в lib/storage.js и api/index.js
+  - markFailed вызывается при ошибках отправки, scard :failed растёт
+  - После завершения рассылки админ получает сообщение со статистикой
+  - Появляется кнопка «📊 Общая статистика рассылок» с агрегированными цифрами
+Next step: /aif-plan fast для реализации дыр в api/index.js и lib/broadcast.js
 <!-- aif:active-summary:end -->
 
 ## Sessions
@@ -53,4 +47,24 @@ Links (paths):
   - test/handler.test.js
   - test/max-api.test.js
   - .ai-factory/patches/2026-06-07-17.40.md
+
+### 2026-06-28 12:00 — Дыры в статистике рассылок
+What changed:
+  - Найдены три пробела в сборе/отображении статистики broadcast
+  - Дыра 1: markFailed() объявлен в lib/broadcast.js:142 но нигде не вызывается — ошибки отправки теряются
+  - Дыра 2: при status='sent' админ видит только «завершена» без итоговых цифр (sent/opened/unsubbed)
+  - Дыра 3: нет агрегированной статистики по всем рассылкам — нет кнопки «общий охват / средний open rate»
+Key notes:
+  - Статистика собирается через scard на :sent, :delivered, :opened, :unsubbed, :failed сетах
+  - open-tracking: 72ч окно в handleMessage/handleCallback; unsub-tracking: 7д окно в bot_stopped
+  - delivered ≈ sent всегда (оптимистичная запись) — MAX API не даёт delivery receipts
+  - Статистика доступна через drill-down (broadcast_view → broadcast_stats) но не проактивно
+  - markFailed ни разу не вызывается в api/index.js при catch в process-broadcasts и first batch
+Links (paths):
+  - lib/broadcast.js (stats sets, markSent/Delivered/Opened/Unsubbed/Failed, getBroadcastStats)
+  - api/index.js:649-699 (broadcast_confirm_now — first batch без markFailed)
+  - api/index.js:925-994 (process-broadcasts — chain batch без markFailed)
+  - api/index.js:737-758 (broadcast_stats callback — существующее отображение)
+  - api/index.js:190-205 (open tracking в handleMessage)
+  - api/index.js:884-899 (unsub tracking в bot_stopped)
 <!-- aif:sessions:end -->

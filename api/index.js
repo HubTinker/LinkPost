@@ -519,6 +519,7 @@ async function handleCallbackQuery (update) {
       [{ type: 'callback', text: '📈 Общая', data: 'stats_general' }],
       [{ type: 'callback', text: '🔑 По ключу', data: 'stats_by_key' }],
       [{ type: 'callback', text: '🏆 Топ ключей', data: 'stats_top' }],
+      [{ type: 'callback', text: '📨 Рассылки', data: 'stats_broadcasts_overall' }],
       [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
     ])
   }
@@ -614,6 +615,31 @@ async function handleCallbackQuery (update) {
     ])
   }
 
+  if (cb.payload === 'stats_broadcasts_overall') {
+    alog('DEBUG', ' callback: stats_broadcasts_overall → агрегация')
+    const all = await getAllBroadcasts()
+    let totalSent = 0; let totalOpened = 0; let totalUnsubbed = 0; let totalFailed = 0; let count = 0
+    for (const br of all) {
+      const s = await getBroadcastStats(br.id)
+      totalSent += s.sent
+      totalOpened += s.opened
+      totalUnsubbed += s.unsubbed
+      totalFailed += s.failed
+      if (s.sent > 0) count++
+    }
+    const avgOpenPct = totalSent ? Math.round(totalOpened / totalSent * 100) : 0
+    let msg = '📊 Общая статистика рассылок\n\n'
+    msg += `📨 Всего рассылок с отправкой: ${count}\n`
+    msg += `📤 Всего отправлено сообщений: ${totalSent}\n`
+    msg += `👁 Всего открытий: ${totalOpened} (в среднем ${avgOpenPct}%)\n`
+    msg += `🚫 Всего отписок: ${totalUnsubbed}\n`
+    msg += `❌ Всего ошибок: ${totalFailed}`
+    alog('DEBUG', 'stats_broadcasts_overall: all=%d, withSent=%d, totalSent=%d', all.length, count, totalSent)
+    return sendMessageWithKeyboard(chatId, msg, [
+      [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+    ])
+  }
+
   if (cb.payload.startsWith('broadcast_images_done:')) {
     const bid = cb.payload.slice('broadcast_images_done:'.length)
     await updateBroadcast(bid, { _images_done: true })
@@ -669,6 +695,8 @@ async function handleCallbackQuery (update) {
         sent++
       } catch (err) {
         console.error(`[broadcast] ${bid}: ERROR for userId=${user.user_id}: ${err.message}`)
+        await markFailed(bid, user.user_id).catch(() => {})
+        alog('INFO', 'broadcast %s: markFailed userId=%d', bid, user.user_id)
         // Leave cursor at this position, will retry
         break
       }
@@ -679,6 +707,17 @@ async function handleCallbackQuery (update) {
     if (cursor >= users.length) {
       await updateBroadcast(bid, { status: 'sent' })
       console.log(`[broadcast] ${bid}: completed (${users.length} users)`)
+      const finalStats = await getBroadcastStats(bid)
+      const totalUs = await getUserCount()
+      const openPct = finalStats.sent ? Math.round(finalStats.opened / finalStats.sent * 100) : 0
+      const unsubPct = finalStats.sent ? Math.round(finalStats.unsubbed / finalStats.sent * 100) : 0
+      const summaryMsg = `✅ Рассылка #${bid} завершена!\n\n` +
+        `📤 Отправлено: ${finalStats.sent} / ${totalUs}\n` +
+        `👁 Открыто: ${finalStats.opened} (${openPct}%)\n` +
+        `🚫 Отписалось: ${finalStats.unsubbed} (${unsubPct}%)\n` +
+        `❌ Ошибок: ${finalStats.failed}`
+      await sendMessage(b.created_by, summaryMsg).catch(e => console.warn('[broadcast] failed to send summary to creator:', e.message))
+      alog('INFO', 'broadcast %s: sent summary to creator=%d, stats=%j', bid, b.created_by, finalStats)
       return sendMessageWithKeyboard(chatId,
         `✅ Рассылка #${bid} завершена! Отправлено ${cursor} сообщений.`,
         [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
@@ -962,6 +1001,8 @@ app.get('/process-broadcasts', async (c) => {
           processedInBatch++
         } catch (err) {
           console.error(`[broadcast] ${b.id}: ERROR for userId=${user.user_id}: ${err.message}`)
+          await markFailed(b.id, user.user_id).catch(() => {})
+          alog('INFO', 'broadcast %s: markFailed userId=%d', b.id, user.user_id)
           // Failed — cursor does NOT advance, will retry next tick
         }
       }
@@ -972,6 +1013,17 @@ app.get('/process-broadcasts', async (c) => {
       if (newCursor >= users.length) {
         await updateBroadcast(b.id, { status: 'sent' })
         console.log(`[broadcast] ${b.id}: completed (${users.length} users)`)
+        const chainStats = await getBroadcastStats(b.id)
+        const chainTotalUs = await getUserCount()
+        const chainOpenPct = chainStats.sent ? Math.round(chainStats.opened / chainStats.sent * 100) : 0
+        const chainUnsubPct = chainStats.sent ? Math.round(chainStats.unsubbed / chainStats.sent * 100) : 0
+        const chainSummary = `✅ Рассылка #${b.id} завершена!\n\n` +
+          `📤 Отправлено: ${chainStats.sent} / ${chainTotalUs}\n` +
+          `👁 Открыто: ${chainStats.opened} (${chainOpenPct}%)\n` +
+          `🚫 Отписалось: ${chainStats.unsubbed} (${chainUnsubPct}%)\n` +
+          `❌ Ошибок: ${chainStats.failed}`
+        await sendMessage(b.created_by, chainSummary).catch(e => console.warn('[broadcast] failed to send chain summary to creator:', e.message))
+        alog('INFO', 'broadcast %s: sent chain summary to creator=%d, stats=%j', b.id, b.created_by, chainStats)
       } else {
         console.log(`[broadcast] ${b.id}: progress ${newCursor}/${users.length}`)
         // Set back to scheduled so next invocation picks it up
