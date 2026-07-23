@@ -19,7 +19,7 @@ import {
 import {
   createBroadcast, getBroadcast, updateBroadcast, deleteBroadcast,
   getAllBroadcasts, getScheduledBroadcasts,
-  markSent, markDelivered, markOpened, markUnsubbed,
+  markSent, markDelivered, markOpened, markUnsubbed, markFailed,
   getBroadcastStats, getCursor, setCursor, isSent
 } from '../lib/broadcast.js'
 
@@ -759,6 +759,7 @@ async function handleCallbackQuery (update) {
     const btnRows = []
     if (b.status === 'draft') {
       btnRows.push([{ type: 'callback', text: '✏️ Редактировать', data: `broadcast_edit:${bid}` }])
+      btnRows.push([{ type: 'callback', text: '▶️ Запустить', data: `broadcast_confirm_now:${bid}` }])
     }
     if (b.status === 'sending') {
       btnRows.push([{ type: 'callback', text: '⏸ Остановить', data: `broadcast_stop:${bid}` }])
