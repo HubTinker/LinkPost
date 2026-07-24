@@ -11,7 +11,7 @@ import { handle } from 'hono/vercel'
 import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead, sendBroadcastMessage } from '../lib/max-api.js'
 import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
-  saveUser, getUserCount, getAllUsers, reactivateUser, markInactive,
+  saveUser, getUserCount, getAllUsers, reactivateUser, markInactive, removeUser,
   getLinkSubCount, getLinkAge, getDailyStat, getDailyTotal, getStatRange, getTotalRange, getLinkCount,
   getLinksRankedBySubs,
   daysAgo
@@ -493,6 +493,7 @@ async function handleCallbackQuery (update) {
       [
         [{ type: 'callback', text: '📝 Новая рассылка', data: 'broadcast_create' }],
         [{ type: 'callback', text: '📋 Список рассылок', data: 'broadcast_list' }],
+        [{ type: 'callback', text: '🧹 Очистить неактивных', data: 'broadcast_clear_stale' }],
         [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
       ]
     )
@@ -682,8 +683,8 @@ async function handleCallbackQuery (update) {
     if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
 
     try {
-      await sendBroadcastMessage(chatId, b)
-      alog('INFO', 'broadcast %s: test sent to admin chatId=%d', bid, chatId)
+      await sendBroadcastMessage(userId, b)
+      alog('INFO', 'broadcast %s: test sent to admin userId=%d', bid, userId)
       return sendMessageWithKeyboard(chatId,
         '✅ Тестовая отправка выполнена!\n\n' + formatBroadcastPreview(b),
         [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
@@ -745,6 +746,10 @@ async function handleCallbackQuery (update) {
       } catch (err) {
         console.error(`[broadcast] ${bid}: ERROR for userId=${user.user_id}: ${err.message}`)
         await markFailed(bid, user.user_id).catch(() => {})
+        if (err.message.includes('404') && (err.message.includes('chat.not.found') || err.message.includes('dialog.not.found'))) {
+          await markInactive(user.user_id).catch(() => {})
+          alog('INFO', 'broadcast %s: marked inactive userId=%d', bid, user.user_id)
+        }
         alog('INFO', 'broadcast %s: markFailed userId=%d, advancing', bid, user.user_id)
         failed++
         cursor++
@@ -909,6 +914,25 @@ async function handleCallbackQuery (update) {
     )
   }
 
+  if (cb.payload === 'broadcast_clear_stale') {
+    const all = await getAllUsers()
+    const stale = all.filter(u => u.inactive)
+    if (!stale.length) {
+      return sendMessageWithKeyboard(chatId, '✅ Нет неактивных пользователей для очистки.', [
+        [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
+      ])
+    }
+    const count = stale.length
+    for (const u of stale) {
+      await removeUser(u.user_id).catch(() => {})
+    }
+    alog('INFO', 'broadcast_clear_stale: removed %d inactive users', count)
+    return sendMessageWithKeyboard(chatId,
+      `🧹 Удалено ${count} неактивных пользователей из базы.`,
+      [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+    )
+  }
+
   if (cb.payload === 'back') {
     alog('DEBUG', ' callback: back → главное меню')
     return showAdminMenu(chatId)
@@ -1061,6 +1085,10 @@ app.get('/process-broadcasts', async (c) => {
         } catch (err) {
           console.error(`[broadcast] ${b.id}: ERROR for userId=${user.user_id}: ${err.message}`)
           await markFailed(b.id, user.user_id).catch(() => {})
+          if (err.message.includes('404') && (err.message.includes('chat.not.found') || err.message.includes('dialog.not.found'))) {
+            await markInactive(user.user_id).catch(() => {})
+            alog('INFO', 'broadcast %s: marked inactive userId=%d', b.id, user.user_id)
+          }
           alog('INFO', 'broadcast %s: markFailed userId=%d, advancing', b.id, user.user_id)
           failedInBatch++
           cursor++
