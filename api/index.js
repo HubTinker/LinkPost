@@ -20,7 +20,7 @@ import {
   createBroadcast, getBroadcast, updateBroadcast, deleteBroadcast,
   getAllBroadcasts, getScheduledBroadcasts,
   markSent, markDelivered, markOpened, markUnsubbed, markFailed,
-  getBroadcastStats, getCursor, setCursor, isSent
+  getBroadcastStats, getCursor, setCursor, isSent, resetBroadcastStats
 } from '../lib/broadcast.js'
 
 const app = new Hono()
@@ -48,6 +48,10 @@ const isAdmin = (userId) => ADMIN_IDS.includes(userId)
 
 /** Парсим аргументы: /command arg1 arg2 ...rest → ['arg1', 'arg2', ...] */
 const parseArgs = (text = '') => text.trim().split(/\s+/).slice(1)
+
+const APP_BASE_URL = process.env.VERCEL_URL
+  ? `https://${process.env.VERCEL_URL}`
+  : (process.env.BASE_URL || 'http://localhost:3000')
 
 function formatBroadcastPreview (b) {
   let out = '📨 Предпросмотр:\n\n' + (b.text || '(нет текста)')
@@ -393,6 +397,7 @@ async function handleMessage (update) {
           formatBroadcastPreview(updated) + '\n\nОтправить сейчас?',
           [
             [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${draft.id}` }],
+            [{ type: 'callback', text: '🔍 Тест', data: `broadcast_test:${draft.id}` }],
             [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
           ]
         )
@@ -665,6 +670,46 @@ async function handleCallbackQuery (update) {
       formatBroadcastPreview(b) + '\n\nОтправить сейчас?',
       [
         [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${bid}` }],
+        [{ type: 'callback', text: '🔍 Тест', data: `broadcast_test:${bid}` }],
+        [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
+      ]
+    )
+  }
+
+  if (cb.payload.startsWith('broadcast_test:')) {
+    const bid = cb.payload.slice('broadcast_test:'.length)
+    const b = await getBroadcast(bid)
+    if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
+
+    try {
+      await sendBroadcastMessage(chatId, b)
+      alog('INFO', 'broadcast %s: test sent to admin chatId=%d', bid, chatId)
+      return sendMessageWithKeyboard(chatId,
+        '✅ Тестовая отправка выполнена!\n\n' + formatBroadcastPreview(b),
+        [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+      )
+    } catch (err) {
+      console.error(`[broadcast] ${bid}: test send error: ${err.message}`)
+      return sendMessage(chatId, `❌ Ошибка тестовой отправки: ${err.message}`)
+    }
+  }
+
+  if (cb.payload.startsWith('broadcast_restart:')) {
+    const bid = cb.payload.slice('broadcast_restart:'.length)
+    const b = await getBroadcast(bid)
+    if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
+    if (b.status === 'sending') return sendMessage(chatId, '⏳ Рассылка ещё выполняется. Дождитесь завершения.')
+
+    await resetBroadcastStats(bid)
+    await updateBroadcast(bid, { status: 'draft', scheduled_at: null })
+    alog('INFO', 'broadcast %s: stats reset, status → draft', bid)
+
+    return sendMessageWithKeyboard(chatId,
+      formatBroadcastPreview(b) + '\n\n📊 Статистика сброшена. Отправить сейчас?',
+      [
+        [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${bid}` }],
+        [{ type: 'callback', text: '✏️ Редактировать', data: `broadcast_edit:${bid}` }],
+        [{ type: 'callback', text: '🔍 Тест', data: `broadcast_test:${bid}` }],
         [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
       ]
     )
@@ -682,9 +727,12 @@ async function handleCallbackQuery (update) {
     const users = await getAllUsers()
     let cursor = await getCursor(bid)
     const batchSize = 20
+    const end = Math.min(cursor + batchSize, users.length)
     let sent = 0
+    let failed = 0
+    let i = cursor
 
-    for (let i = cursor; i < Math.min(cursor + batchSize, users.length); i++) {
+    for (; i < end; i++) {
       const user = users[i]
       try {
         const alreadySent = await isSent(bid, user.user_id)
@@ -693,15 +741,20 @@ async function handleCallbackQuery (update) {
         await markSent(bid, user.user_id)
         await markDelivered(bid, user.user_id)
         sent++
+        cursor++
       } catch (err) {
         console.error(`[broadcast] ${bid}: ERROR for userId=${user.user_id}: ${err.message}`)
         await markFailed(bid, user.user_id).catch(() => {})
-        alog('INFO', 'broadcast %s: markFailed userId=%d', bid, user.user_id)
-        // Leave cursor at this position, will retry
-        break
+        alog('INFO', 'broadcast %s: markFailed userId=%d, advancing', bid, user.user_id)
+        failed++
+        cursor++
       }
-      cursor++
     }
+
+    if (failed) {
+      alog('WARN', 'broadcast %s: %d users failed in this batch, skipped', bid, failed)
+    }
+    cursor = i
     await setCursor(bid, cursor)
 
     if (cursor >= users.length) {
@@ -727,7 +780,7 @@ async function handleCallbackQuery (update) {
     // Fire-and-forget: continue with next batch
     const secret = process.env.SETUP_SECRET
     if (secret) {
-      fetch(`/process-broadcasts?secret=${encodeURIComponent(secret)}`)
+      fetch(`${APP_BASE_URL}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
         .catch(e => console.warn('[broadcast] chain call failed:', e.message))
     }
 
@@ -763,6 +816,9 @@ async function handleCallbackQuery (update) {
     }
     if (b.status === 'sending') {
       btnRows.push([{ type: 'callback', text: '⏸ Остановить', data: `broadcast_stop:${bid}` }])
+    }
+    if (b.status === 'sent' || b.status === 'cancelled') {
+      btnRows.push([{ type: 'callback', text: '🔄 Перезапустить', data: `broadcast_restart:${bid}` }])
     }
     if (b.status === 'cancelled') {
       btnRows.push([{ type: 'callback', text: '▶️ Возобновить', data: `broadcast_resume:${bid}` }])
@@ -981,17 +1037,19 @@ app.get('/process-broadcasts', async (c) => {
       console.log(`[broadcast] ${b.id}: started`)
 
       const users = await getAllUsers()
-      const cursor = await getCursor(b.id)
+      let cursor = await getCursor(b.id)
       const batchSize = 20
-      const batch = users.slice(cursor, cursor + batchSize)
+      const end = Math.min(cursor + batchSize, users.length)
 
       let sentInBatch = 0
-      let processedInBatch = 0
-      for (const user of batch) {
+      let failedInBatch = 0
+      let i = cursor
+      for (; i < end; i++) {
+        const user = users[i]
         try {
           const alreadySent = await isSent(b.id, user.user_id)
           if (alreadySent) {
-            processedInBatch++
+            cursor++
             continue
           }
 
@@ -999,16 +1057,20 @@ app.get('/process-broadcasts', async (c) => {
           await markSent(b.id, user.user_id)
           await markDelivered(b.id, user.user_id)
           sentInBatch++
-          processedInBatch++
+          cursor++
         } catch (err) {
           console.error(`[broadcast] ${b.id}: ERROR for userId=${user.user_id}: ${err.message}`)
           await markFailed(b.id, user.user_id).catch(() => {})
-          alog('INFO', 'broadcast %s: markFailed userId=%d', b.id, user.user_id)
-          // Failed — cursor does NOT advance, will retry next tick
+          alog('INFO', 'broadcast %s: markFailed userId=%d, advancing', b.id, user.user_id)
+          failedInBatch++
+          cursor++
         }
       }
 
-      const newCursor = cursor + processedInBatch
+      if (failedInBatch) {
+        alog('WARN', 'broadcast %s: %d users failed in this batch, skipped', b.id, failedInBatch)
+      }
+      const newCursor = i
       await setCursor(b.id, newCursor)
 
       if (newCursor >= users.length) {

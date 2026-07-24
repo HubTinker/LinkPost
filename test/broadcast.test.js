@@ -5,7 +5,7 @@ import {
   createBroadcast, getBroadcast, updateBroadcast, deleteBroadcast,
   getAllBroadcasts, getScheduledBroadcasts,
   markSent, isSent, markDelivered, markOpened, markUnsubbed, markFailed,
-  getCursor, setCursor, getBroadcastStats
+  getCursor, setCursor, getBroadcastStats, resetBroadcastStats
 } from '../lib/broadcast.js'
 
 import { kv } from '../lib/kv-mock.js'
@@ -195,6 +195,33 @@ describe('Broadcast cursor', () => {
     await setCursor(b.id, 42)
     const cursor = await getCursor(b.id)
     assert.strictEqual(cursor, 42)
+  })
+})
+
+describe('resetBroadcastStats', () => {
+  beforeEach(async () => {
+    await kv._clear()
+  })
+
+  it('should reset cursor and delete all stat sets', async () => {
+    const b = await createBroadcast({ text: 'Reset me', created_by: 123 })
+    await markSent(b.id, 100)
+    await markSent(b.id, 200)
+    await markFailed(b.id, 300)
+    await setCursor(b.id, 42)
+
+    const before = await getBroadcastStats(b.id)
+    assert.strictEqual(before.sent, 2)
+    assert.strictEqual(before.failed, 1)
+
+    await resetBroadcastStats(b.id)
+
+    const after = await getBroadcastStats(b.id)
+    assert.strictEqual(after.sent, 0)
+    assert.strictEqual(after.failed, 0)
+
+    const cursor = await getCursor(b.id)
+    assert.strictEqual(cursor, 0)
   })
 })
 

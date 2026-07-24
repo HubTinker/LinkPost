@@ -18,6 +18,10 @@ global.fetch = async (url, opts) => {
 }
 
 const { kv } = await import('../lib/kv-mock.js')
+const {
+  createBroadcast, getBroadcast, getBroadcastStats, getCursor,
+  markSent, markFailed, setCursor, resetBroadcastStats
+} = await import('../lib/broadcast.js')
 const { handleMessage, handleBotStarted } = await import('../api/index.js')
 const { setLink: setLinkFromStorage } = await import('../lib/storage.js')
 const { daysAgo } = await import('../lib/storage.js')
@@ -684,5 +688,129 @@ describe('/stats command', () => {
     })
     const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('📭'))
     assert.ok(responseCall, 'empty state not found')
+  })
+})
+
+describe('broadcast_test callback', () => {
+  beforeEach(() => {
+    fetchCalls = []
+    kv._clear()
+  })
+
+  it('should send test message to admin chat', async () => {
+    const b = await createBroadcast({ text: 'Test broadcast', created_by: 123 })
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_test:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const sendCalls = fetchCalls.filter(c => c.url?.includes('chat_id=1'))
+    assert.ok(sendCalls.length >= 1, 'should send message to admin chat')
+    assert.ok(sendCalls.some(c => c.body.text === 'Test broadcast'), 'should include broadcast text')
+  })
+
+  it('should show error for nonexistent broadcast', async () => {
+    await handleCallbackQuery({
+      callback: { payload: 'broadcast_test:nonexistent', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('не найдена'))
+    assert.ok(responseCall, 'should show not found error')
+  })
+})
+
+describe('broadcast_restart callback', () => {
+  beforeEach(() => {
+    fetchCalls = []
+    kv._clear()
+  })
+
+  it('should reset stats and show confirmation screen', async () => {
+    const b = await createBroadcast({ text: 'Restart me', created_by: 123 })
+    await markSent(b.id, 100)
+    await markFailed(b.id, 200)
+    await setCursor(b.id, 15)
+
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_restart:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+
+    const stats = await getBroadcastStats(b.id)
+    assert.strictEqual(stats.sent, 0, 'sent should be reset')
+    assert.strictEqual(stats.failed, 0, 'failed should be reset')
+
+    const cursor = await getCursor(b.id)
+    assert.strictEqual(cursor, 0, 'cursor should be reset')
+
+    const updated = await getBroadcast(b.id)
+    assert.strictEqual(updated.status, 'draft', 'status should be draft')
+
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Отправить сейчас'))
+    assert.ok(responseCall, 'should show send confirmation')
+  })
+
+  it('should show error for nonexistent broadcast', async () => {
+    await handleCallbackQuery({
+      callback: { payload: 'broadcast_restart:nonexistent', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('не найдена'))
+    assert.ok(responseCall, 'should show not found error')
+  })
+})
+
+describe('broadcast_confirm_now flow', () => {
+  beforeEach(() => {
+    fetchCalls = []
+    kv._clear()
+  })
+
+  it('should send broadcast to all users', async () => {
+    await kv.sadd('users_all', '100')
+    await kv.sadd('users_all', '200')
+    await kv.set('user:100', { user_id: 100, name: 'Alice' })
+    await kv.set('user:200', { user_id: 200, name: 'Bob' })
+
+    const b = await createBroadcast({ text: 'Hi everyone', created_by: 123 })
+
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+
+    const sendToUser100 = fetchCalls.filter(c => c.url?.includes('chat_id=100'))
+    const sendToUser200 = fetchCalls.filter(c => c.url?.includes('chat_id=200'))
+    assert.strictEqual(sendToUser100.length, 1, 'should send to user 100')
+    assert.strictEqual(sendToUser200.length, 1, 'should send to user 200')
+  })
+
+  it('should continue sending despite errors on individual users', async () => {
+    await kv.sadd('users_all', '100')
+    await kv.sadd('users_all', '200')
+    await kv.set('user:100', { user_id: 100, name: 'Alice' })
+    await kv.set('user:200', { user_id: 200, name: 'Bob' })
+
+    const b = await createBroadcast({ text: 'Error test', created_by: 123 })
+
+    const originalFetch = global.fetch
+    global.fetch = async (url, opts) => {
+      if (typeof url === 'string' && url.includes('chat_id=100')) {
+        throw new Error('Network error for user 100')
+      }
+      return { ok: true, json: async () => ({ ok: true }), text: async () => '', status: 200 }
+    }
+
+    try {
+      await handleCallbackQuery({
+        callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
+        message: { recipient: { chat_id: 1 } }
+      })
+    } finally {
+      global.fetch = originalFetch
+    }
+
+    const stats = await getBroadcastStats(b.id)
+    assert.strictEqual(stats.failed, 1, 'first user should be marked failed')
+    assert.strictEqual(stats.sent, 1, 'second user should be marked sent')
   })
 })
