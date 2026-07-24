@@ -49,6 +49,9 @@ const isAdmin = (userId) => ADMIN_IDS.includes(userId)
 /** Парсим аргументы: /command arg1 arg2 ...rest → ['arg1', 'arg2', ...] */
 const parseArgs = (text = '') => text.trim().split(/\s+/).slice(1)
 
+const delay = (ms) => new Promise(r => setTimeout(r, ms))
+const BATCH_DELAY = 50
+
 const APP_BASE_URL = process.env.VERCEL_URL
   ? `https://${process.env.VERCEL_URL}`
   : (process.env.BASE_URL || 'http://localhost:3000')
@@ -699,14 +702,19 @@ async function handleCallbackQuery (update) {
     const bid = cb.payload.slice('broadcast_restart:'.length)
     const b = await getBroadcast(bid)
     if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
-    if (b.status === 'sending') return sendMessage(chatId, '⏳ Рассылка ещё выполняется. Дождитесь завершения.')
 
-    await resetBroadcastStats(bid)
+    let msg
     await updateBroadcast(bid, { status: 'draft', scheduled_at: null })
-    alog('INFO', 'broadcast %s: stats reset, status → draft', bid)
+    if (b.status === 'scheduled' || b.status === 'sending') {
+      alog('INFO', 'broadcast %s: status → draft, stats preserved', bid)
+      msg = formatBroadcastPreview(b) + '\n\n📊 Статистика сохранена. При отправке пропустит уже доставленных.'
+    } else {
+      await resetBroadcastStats(bid)
+      alog('INFO', 'broadcast %s: stats reset, status → draft', bid)
+      msg = formatBroadcastPreview(b) + '\n\n📊 Статистика сброшена. Отправить сейчас?'
+    }
 
-    return sendMessageWithKeyboard(chatId,
-      formatBroadcastPreview(b) + '\n\n📊 Статистика сброшена. Отправить сейчас?',
+    return sendMessageWithKeyboard(chatId, msg,
       [
         [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${bid}` }],
         [{ type: 'callback', text: '✏️ Редактировать', data: `broadcast_edit:${bid}` }],
@@ -743,6 +751,7 @@ async function handleCallbackQuery (update) {
         await markDelivered(bid, user.user_id)
         sent++
         cursor++
+        await delay(BATCH_DELAY)
       } catch (err) {
         console.error(`[broadcast] ${bid}: ERROR for userId=${user.user_id}: ${err.message}`)
         await markFailed(bid, user.user_id).catch(() => {})
@@ -753,6 +762,7 @@ async function handleCallbackQuery (update) {
         alog('INFO', 'broadcast %s: markFailed userId=%d, advancing', bid, user.user_id)
         failed++
         cursor++
+        await delay(BATCH_DELAY)
       }
     }
 
@@ -814,13 +824,21 @@ async function handleCallbackQuery (update) {
     const b = await getBroadcast(bid)
     if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
 
+    let detail = formatBroadcastDetail(b)
+    if (b.status === 'scheduled' || b.status === 'sending') {
+      const cursor = await getCursor(bid)
+      const totalUsers = await getUserCount()
+      detail += `📤 Прогресс: ${cursor} / ${totalUsers}\n`
+    }
+
     const btnRows = []
     if (b.status === 'draft') {
       btnRows.push([{ type: 'callback', text: '✏️ Редактировать', data: `broadcast_edit:${bid}` }])
       btnRows.push([{ type: 'callback', text: '▶️ Запустить', data: `broadcast_confirm_now:${bid}` }])
     }
-    if (b.status === 'sending') {
+    if (b.status === 'scheduled' || b.status === 'sending') {
       btnRows.push([{ type: 'callback', text: '⏸ Остановить', data: `broadcast_stop:${bid}` }])
+      btnRows.push([{ type: 'callback', text: '🔄 Перезапустить', data: `broadcast_restart:${bid}` }])
     }
     if (b.status === 'sent' || b.status === 'cancelled') {
       btnRows.push([{ type: 'callback', text: '🔄 Перезапустить', data: `broadcast_restart:${bid}` }])
@@ -832,7 +850,7 @@ async function handleCallbackQuery (update) {
     btnRows.push([{ type: 'callback', text: '❌ Удалить', data: `broadcast_delete:${bid}` }])
     btnRows.push([{ type: 'callback', text: '🔙 К списку', data: 'broadcast_list' }])
 
-    return sendMessageWithKeyboard(chatId, formatBroadcastDetail(b), btnRows)
+    return sendMessageWithKeyboard(chatId, detail, btnRows)
   }
 
   if (cb.payload.startsWith('broadcast_stats:')) {
@@ -1082,6 +1100,7 @@ app.get('/process-broadcasts', async (c) => {
           await markDelivered(b.id, user.user_id)
           sentInBatch++
           cursor++
+          await delay(BATCH_DELAY)
         } catch (err) {
           console.error(`[broadcast] ${b.id}: ERROR for userId=${user.user_id}: ${err.message}`)
           await markFailed(b.id, user.user_id).catch(() => {})
@@ -1092,6 +1111,7 @@ app.get('/process-broadcasts', async (c) => {
           alog('INFO', 'broadcast %s: markFailed userId=%d, advancing', b.id, user.user_id)
           failedInBatch++
           cursor++
+          await delay(BATCH_DELAY)
         }
       }
 
