@@ -730,7 +730,7 @@ async function handleCallbackQuery (update) {
     const b = await getBroadcast(bid)
     if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
 
-    await updateBroadcast(bid, { status: 'scheduled', scheduled_at: Date.now() })
+    await updateBroadcast(bid, { status: 'scheduled', scheduled_at: Date.now(), created_by_chat_id: chatId })
     alog('DEBUG', 'broadcast_confirm_now: starting broadcast %s', bid)
 
     // Send first batch inline
@@ -773,7 +773,7 @@ async function handleCallbackQuery (update) {
 
       totalAttempted = i + 1
 
-      // Progress update to admin every PROGRESS_INTERVAL users
+      // Progress update to admin every PROGRESS_INTERVAL users (edit in place)
       if (totalAttempted >= nextProgressAt && totalAttempted < users.length) {
         nextProgressAt = totalAttempted + PROGRESS_INTERVAL
         const statsSoFar = await getBroadcastStats(bid)
@@ -783,14 +783,15 @@ async function handleCallbackQuery (update) {
           `❌ Ошибок: ${statsSoFar.failed}\n` +
           `📈 Прогресс: ${totalAttempted}/${users.length}`
 
-        // Edit existing progress message or send first one
+        // Use admin's real chat_id (not user_id) — MAX API needs chat_id for sendMessage
+        const adminChatId = chatId
         const existingMsgId = await getProgressMessageId(bid)
         if (existingMsgId) {
-          editMessage(b.created_by, existingMsgId, progressMsg).catch(e =>
+          editMessage(adminChatId, existingMsgId, progressMsg).catch(e =>
             console.warn('[broadcast] progress edit failed:', e.message)
           )
         } else {
-          sendMessage(b.created_by, progressMsg).then(resp => {
+          sendMessage(adminChatId, progressMsg).then(resp => {
             if (resp?.message_id) {
               setProgressMessageId(bid, resp.message_id).catch(() => {})
             }
@@ -820,8 +821,8 @@ async function handleCallbackQuery (update) {
         `👁 Открыто: ${finalStats.opened} (${openPct}%)\n` +
         `🚫 Отписалось: ${finalStats.unsubbed} (${unsubPct}%)\n` +
         `❌ Ошибок: ${finalStats.failed}`
-      await sendMessage(b.created_by, summaryMsg).catch(e => console.warn('[broadcast] failed to send summary to creator:', e.message))
-      alog('INFO', 'broadcast %s: sent summary to creator=%d, stats=%j', bid, b.created_by, finalStats)
+      await sendMessage(chatId, summaryMsg).catch(e => console.warn('[broadcast] failed to send summary to creator:', e.message))
+      alog('INFO', 'broadcast %s: sent summary, stats=%j', bid, finalStats)
       return sendMessageWithKeyboard(chatId,
         `✅ Рассылка #${bid} завершена! Отправлено ${cursor} сообщений.`,
         [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
@@ -1175,21 +1176,27 @@ app.get('/process-broadcasts', async (c) => {
           `❌ Ошибок: ${chainStats.failed}\n` +
           `📈 Прогресс: ${totalAttempted}/${users.length}`
 
-        const existingMsgId = await getProgressMessageId(b.id)
-        if (existingMsgId) {
-          editMessage(b.created_by, existingMsgId, progressMsg).catch(e =>
-            console.warn('[broadcast] progress edit failed:', e.message)
-          )
+        // Use admin's chat_id (stored at broadcast start) — user_id != chat_id in MAX API
+        const adminChatId = b.created_by_chat_id
+        if (!adminChatId) {
+          alog('WARN', 'broadcast %s: no created_by_chat_id, skipping progress', b.id)
         } else {
-          sendMessage(b.created_by, progressMsg).then(resp => {
-            if (resp?.message_id) {
-              setProgressMessageId(b.id, resp.message_id).catch(() => {})
-            }
-          }).catch(e =>
-            console.warn('[broadcast] progress send failed:', e.message)
-          )
+          const existingMsgId = await getProgressMessageId(b.id)
+          if (existingMsgId) {
+            editMessage(adminChatId, existingMsgId, progressMsg).catch(e =>
+              console.warn('[broadcast] progress edit failed:', e.message)
+            )
+          } else {
+            sendMessage(adminChatId, progressMsg).then(resp => {
+              if (resp?.message_id) {
+                setProgressMessageId(b.id, resp.message_id).catch(() => {})
+              }
+            }).catch(e =>
+              console.warn('[broadcast] progress send failed:', e.message)
+            )
+          }
+          alog('INFO', 'broadcast %s: progress %d/%d (%d%%)', b.id, totalAttempted, users.length, progressPct)
         }
-        alog('INFO', 'broadcast %s: progress %d/%d (%d%%)', b.id, totalAttempted, users.length, progressPct)
       }
 
       if (newCursor >= users.length) {
@@ -1204,8 +1211,11 @@ app.get('/process-broadcasts', async (c) => {
           `👁 Открыто: ${chainStats.opened} (${chainOpenPct}%)\n` +
           `🚫 Отписалось: ${chainStats.unsubbed} (${chainUnsubPct}%)\n` +
           `❌ Ошибок: ${chainStats.failed}`
-        await sendMessage(b.created_by, chainSummary).catch(e => console.warn('[broadcast] failed to send chain summary to creator:', e.message))
-        alog('INFO', 'broadcast %s: sent chain summary to creator=%d, stats=%j', b.id, b.created_by, chainStats)
+        const summaryChatId = b.created_by_chat_id
+        if (summaryChatId) {
+          await sendMessage(summaryChatId, chainSummary).catch(e => console.warn('[broadcast] failed to send chain summary to creator:', e.message))
+        }
+        alog('INFO', 'broadcast %s: completed, stats=%j', b.id, chainStats)
       } else {
         console.log(`[broadcast] ${b.id}: progress ${newCursor}/${users.length}`)
         // Set back to scheduled so next invocation picks it up
@@ -1299,19 +1309,24 @@ app.get('/cron-process-broadcasts', async (c) => {
           `❌ Ошибок: ${cStats.failed}\n` +
           `📈 Прогресс: ${totalAttempted}/${users.length}`
 
-        const existingMsgId = await getProgressMessageId(b.id)
-        if (existingMsgId) {
-          editMessage(b.created_by, existingMsgId, msg).catch(e =>
-            console.warn('[broadcast] cron progress edit failed:', e.message)
-          )
+        const adminChatId = b.created_by_chat_id
+        if (!adminChatId) {
+          alog('WARN', 'broadcast %s: no created_by_chat_id, skipping cron progress', b.id)
         } else {
-          sendMessage(b.created_by, msg).then(resp => {
-            if (resp?.message_id) {
-              setProgressMessageId(b.id, resp.message_id).catch(() => {})
-            }
-          }).catch(e =>
-            console.warn('[broadcast] cron progress send failed:', e.message)
-          )
+          const existingMsgId = await getProgressMessageId(b.id)
+          if (existingMsgId) {
+            editMessage(adminChatId, existingMsgId, msg).catch(e =>
+              console.warn('[broadcast] cron progress edit failed:', e.message)
+            )
+          } else {
+            sendMessage(adminChatId, msg).then(resp => {
+              if (resp?.message_id) {
+                setProgressMessageId(b.id, resp.message_id).catch(() => {})
+              }
+            }).catch(e =>
+              console.warn('[broadcast] cron progress send failed:', e.message)
+            )
+          }
         }
       }
 
@@ -1327,7 +1342,10 @@ app.get('/cron-process-broadcasts', async (c) => {
           `👁 Открыто: ${cStats.opened} (${openPct}%)\n` +
           `🚫 Отписалось: ${cStats.unsubbed} (${unsubPct}%)\n` +
           `❌ Ошибок: ${cStats.failed}`
-        await sendMessage(b.created_by, summary).catch(e => console.warn('[broadcast] cron summary send failed:', e.message))
+        const summaryChatId = b.created_by_chat_id
+        if (summaryChatId) {
+          await sendMessage(summaryChatId, summary).catch(e => console.warn('[broadcast] cron summary send failed:', e.message))
+        }
       } else {
         console.log(`[broadcast] ${b.id}: cron progress ${newCursor}/${users.length}`)
         await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
