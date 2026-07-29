@@ -829,17 +829,22 @@ async function handleCallbackQuery (update) {
       )
     }
 
-    // Fire-and-forget: continue with next batch
+    // Continue with next batch (parallel — both the admin message and the chain call happen at once)
     const secret = process.env.SETUP_SECRET
-    if (secret) {
-      fetch(`${APP_BASE_URL}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
-        .catch(e => console.warn('[broadcast] chain call failed:', e.message))
-    }
+    const chainPromise = secret
+      ? fetch(`${APP_BASE_URL}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
+          .then(r => r.json()).then(r => alog('INFO', 'broadcast %s: chain call result: %j', bid, r))
+          .catch(e => console.warn('[broadcast] chain call failed:', e.message))
+      : Promise.resolve()
 
-    return sendMessageWithKeyboard(chatId,
-      `📤 Рассылка #${bid} запущена! Отправлено ${sent} из ${users.length}. Продолжаю...\nℹ️ Прогресс будет приходить каждые ${PROGRESS_INTERVAL} сообщений.`,
-      [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-    )
+    await Promise.all([
+      sendMessageWithKeyboard(chatId,
+        `📤 Рассылка #${bid} запущена! Отправлено ${sent} из ${users.length}. Продолжаю...` +
+        `\nℹ️ Прогресс будет приходить каждые ${PROGRESS_INTERVAL} сообщений.`,
+        [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+      ),
+      chainPromise
+    ])
   }
 
   if (cb.payload === 'broadcast_list') {
@@ -1220,10 +1225,11 @@ app.get('/process-broadcasts', async (c) => {
         console.log(`[broadcast] ${b.id}: progress ${newCursor}/${users.length}`)
         // Set back to scheduled so next invocation picks it up
         await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
-        // Fire-and-forget: continue with next batch
+        // Continue with next batch
         const host = c.req.header('host')
         const scheme = c.req.header('x-forwarded-proto') || 'https'
-        fetch(`${scheme}://${host}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
+        await fetch(`${scheme}://${host}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
+          .then(r => r.json()).then(r => alog('INFO', 'broadcast %s: chain call result: %j', b.id, r))
           .catch(e => console.warn('[broadcast] chain call failed:', e.message))
       }
 
