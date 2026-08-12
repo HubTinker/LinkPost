@@ -133,6 +133,35 @@ async function showLinksList (chatId, userId, page = 1) {
   return sendMessageWithKeyboard(chatId, out, rows)
 }
 
+const MAX_LINK_MESSAGE_DISPLAY = 3000
+
+/** Показать карточку связки: текст, ссылка, диплинк + кнопки */
+async function showLinkCard (chatId, userId, key) {
+  const link = await getLink(key)
+  if (!isAdmin(userId) && (!link || !canManage(userId, link))) {
+    return sendMessage(chatId, `⛔ Ключ "${key}" не найден или у вас нет прав.`)
+  }
+  if (!link) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
+
+  const displayMessage = link.message?.length > 0
+    ? (link.message.length > MAX_LINK_MESSAGE_DISPLAY ? `${link.message.slice(0, MAX_LINK_MESSAGE_DISPLAY)}...` : link.message)
+    : '(нет текста)'
+
+  const text =
+    `🔑 Ключ: ${key}\n\n` +
+    `💬 Сообщение:\n${displayMessage}\n\n` +
+    `🔗 Ссылка: ${link.url}\n\n` +
+    `🔗 Диплинк: https://max.ru/${BOT_NICK}?start=${key}`
+
+  return sendMessageWithKeyboard(chatId, text, [
+    [
+      { type: 'callback', text: '🗑 Удалить', data: `del:${key}` },
+      { type: 'callback', text: '👁 Посмотреть', data: `link_preview:${key}` }
+    ],
+    [{ type: 'callback', text: '🔙 Назад', data: 'links' }]
+  ])
+}
+
 /** Показать админское главное меню */
 async function showAdminMenu (chatId, userId) {
   if (!isAdmin(userId)) return
@@ -319,6 +348,14 @@ async function handleMessage (update) {
     const [pageArg] = parseArgs(text)
     const page = pageArg ? Math.max(1, parseInt(pageArg, 10) || 1) : 1
     return showLinksList(chat_id, userId, page)
+  }
+
+  if (text === '/link' || text.startsWith('/link ')) {
+    const [key] = parseArgs(text)
+    if (!key) {
+      return sendMessage(chat_id, '⚠️ Формат: /link <ключ>\n\nПример:\n/link vip')
+    }
+    return showLinkCard(chat_id, userId, key)
   }
 
   if (text.startsWith('/users')) {

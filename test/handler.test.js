@@ -843,6 +843,105 @@ describe('/stats command', () => {
   })
 })
 
+describe('/link command', () => {
+  beforeEach(() => {
+    fetchCalls = []
+    kv._clear()
+  })
+
+  it('should show card for admin', async () => {
+    await kv.set('link:vip', { url: 'https://channel.com', message: 'Welcome!' })
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/link vip' } },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('🔑 Ключ: vip'))
+    assert.ok(responseCall, 'card not found')
+    assert.ok(responseCall.body.text.includes('Welcome!'), 'should show message')
+    assert.ok(responseCall.body.text.includes('https://channel.com'), 'should show url')
+    const expectedDeeplink = `https://max.ru/${process.env.BOT_NICK || 'YourBot'}?start=vip`
+    assert.ok(responseCall.body.text.includes(expectedDeeplink), 'should show deeplink')
+    assert.deepEqual(responseCall.body.attachments[0].payload.buttons, [
+      [
+        { type: 'callback', text: '🗑 Удалить', payload: 'del:vip' },
+        { type: 'callback', text: '👁 Посмотреть', payload: 'link_preview:vip' }
+      ],
+      [{ type: 'callback', text: '🔙 Назад', payload: 'links' }]
+    ])
+  })
+
+  it('should show usage when key is missing', async () => {
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/link' } },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Формат: /link <ключ>'))
+    assert.ok(responseCall, 'usage not found')
+  })
+
+  it('should show not found for missing key (admin)', async () => {
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/link nope' } },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('не найден'))
+    assert.ok(responseCall, 'not found message expected')
+    assert.ok(!responseCall.body.text.includes('или у вас нет прав'), 'admin should get distinct message')
+  })
+
+  it('should show card for non-admin own key', async () => {
+    await setLinkFromStorage('own', 'https://own.com', 'Own msg', 999)
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/link own' } },
+      user: { user_id: 999 }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('🔑 Ключ: own'))
+    assert.ok(responseCall, 'card not found for own link')
+  })
+
+  it('should deny foreign key for non-admin with unified message', async () => {
+    await setLinkFromStorage('secret', 'https://secret.com', 'SECRET_TEXT', 123)
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/link secret' } },
+      user: { user_id: 999 }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text)
+    assert.ok(responseCall, 'response expected')
+    assert.ok(responseCall.body.text.includes('не найден или у вас нет прав'), 'unified message expected')
+    assert.ok(!responseCall.body.text.includes('SECRET_TEXT'), 'must not leak message')
+  })
+
+  it('should truncate long message in card', async () => {
+    const longMsg = 'x'.repeat(3500)
+    await kv.set('link:long', { url: 'https://l.com', message: longMsg })
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/link long' } },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('🔑 Ключ: long'))
+    assert.ok(responseCall, 'card not found')
+    assert.ok(responseCall.body.text.includes('...'), 'should show ellipsis')
+    assert.ok(responseCall.body.text.length < 4000, 'card should be within message limits')
+  })
+
+  it('should show (нет текста) for empty message', async () => {
+    await kv.set('link:empty', { url: 'https://e.com', message: '' })
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/link empty' } },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('(нет текста)'))
+    assert.ok(responseCall, '(нет текста) not found')
+  })
+})
+
 describe('broadcast_test callback', () => {
   beforeEach(() => {
     fetchCalls = []
