@@ -46,7 +46,7 @@
 
 ### 3.4. Пустой список
 - Админ: `📭 Нет активных связок. Добавьте первую через /setlink.` + кнопка `[🔙 Назад]` (`back`)
-- Создатель: `📭 У вас пока нет связок.` + кнопка `[➕ Создать]` (`create` — показывает подсказку /setlink), чтобы не оставлять на пустом экране без навигации. `create` добавляется в whitelist payload'ов для не-админов (см. 6.3); хендлер безопасен — только текст-подсказка
+- Создатель: `📭 У вас пока нет связок.` — без кнопок и без совета `/setlink`: команда `/setlink` не-админам недоступна (фильтр slash-команд), кнопка «Создать» вела бы на невыполнимую команду. Отправка — `sendMessage` без клавиатуры
 
 ### 3.5. Сортировка
 - Связки сортируются по ключу (`localeCompare`) в `showLinksList` для стабильной пагинации (порядок `smembers` не гарантирован). Storage-слой не трогаем
@@ -161,7 +161,7 @@ if (!isAdmin(userId) && text.startsWith('/') && !isAllowedLinkCmd) return
 ### 6.3. Фильтр callback'ов (`handleCallbackQuery`, стр. ~430)
 - Явный guard на входе — не-админ отсекается, кроме whitelist:
   ```js
-  const ALLOWED_NON_ADMIN_PAYLOADS = ['links', 'create', 'back']
+  const ALLOWED_NON_ADMIN_PAYLOADS = ['links', 'back']
   const ALLOWED_NON_ADMIN_PREFIXES = ['links_page:', 'link_preview:', 'del:', 'confirm_del:']
   const isAllowed = ALLOWED_NON_ADMIN_PAYLOADS.includes(cb.payload) ||
     ALLOWED_NON_ADMIN_PREFIXES.some(p => cb.payload.startsWith(p))
@@ -176,7 +176,7 @@ if (!isAdmin(userId) && text.startsWith('/') && !isAllowedLinkCmd) return
     return showAdminMenu(chatId, userId)
   }
   ```
-  (защита от старых сообщений; в новых UI кнопка `back` не-админам не показывается — у создателя в списке только `[⬅️] [➡️]`, в пустом списке — `[➕ Создать]`)
+  (защита от старых сообщений; в новых UI кнопка `back` не-админам не показывается — у создателя в списке только `[⬅️] [➡️]`, на единственной странице клавиатура отсутствует)
 
 ---
 
@@ -241,7 +241,7 @@ if (!isAdmin(userId) && text.startsWith('/') && !isAllowedLinkCmd) return
 - `del:` / `confirm_del:` не-админом по чужой связке — единое сообщение «не найден или нет прав», текст ответа не содержит чужих url/message
 - `confirm_del:` — финальная кнопка `{ text: '🔙 К списку', data: 'links' }`
 - `back` не-админом — подсказка, не админ-меню; `showAdminMenu` с не-админом — пустой ответ (guard)
-- Пустой список создателя — кнопка `[➕ Создать]`; `create` не-админом — подсказка /setlink
+- Пустой список создателя — текст без кнопок (`sendMessage` без клавиатуры); единственная страница без пагинации — тоже `sendMessage` без клавиатуры (пустая inline_keyboard не отсылается)
 - Обрезка message > 3000 в карточке; пустой message — «(нет текста)»
 - Сортировка списка по ключу
 
@@ -270,6 +270,6 @@ if (!isAdmin(userId) && text.startsWith('/') && !isAllowedLinkCmd) return
 - [ ] После удаления — «✅ Связка удалена» + кнопка `{ text: '🔙 К списку', data: 'links' }`
 - [ ] `showAdminMenu(chatId, userId)` — guard `isAdmin`
 - [ ] Пустой `message` в карточке — «(нет текста)»
-- [ ] Пустой список создателя — кнопка `[➕ Создать]`
+- [ ] Пустой список создателя — без кнопок (`sendMessage` без клавиатуры); guard `rows.length` перед `sendMessageWithKeyboard`
 - [ ] Обновить существующие тесты (9.1), добавить новые (9.2), `npm test` зелёный
 - [ ] Обновить README/docs: команды `/links` и `/link`
