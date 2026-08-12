@@ -33,6 +33,7 @@ const ADMIN_IDS = (process.env.ADMIN_USER_IDS ?? '')
   .filter(Boolean)
 
 const BOT_NICK = process.env.BOT_NICK ?? 'YourBot'
+const LINK_BUTTON_LABEL = '👉 Перейти в канал'
 
 const LOG_LEVEL = (process.env.LOG_LEVEL ?? 'INFO').toUpperCase()
 const LV = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 }
@@ -155,7 +156,7 @@ async function handleBotStarted (update) {
       await sendMessageWithLink(
         chat_id,
         data.message,
-        { label: '👉 Перейти в канал', url: data.url }
+        { label: LINK_BUTTON_LABEL, url: data.url }
       )
     } else {
       await sendMessage(chat_id, '❌ Ссылка не найдена или устарела.')

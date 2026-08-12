@@ -72,6 +72,8 @@ describe('handleBotStarted', () => {
     assert.ok(responseCall, 'response with attachment not found')
     assert.equal(responseCall.body.attachments[0].type, 'inline_keyboard')
     assert.ok(responseCall.body.text.includes('Welcome!'), 'should include message')
+    const btn = responseCall.body.attachments[0].payload.buttons[0][0]
+    assert.equal(btn.text, '👉 Перейти в канал', 'should use LINK_BUTTON_LABEL')
   })
 
   it('should show error for invalid payload', async () => {
