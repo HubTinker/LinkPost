@@ -265,6 +265,7 @@ describe('handleMessage commands', () => {
     })
     const page2 = fetchCalls.find(c => c.body?.text?.includes('стр. 2 из 2'))
     assert.ok(page2, 'page 2 header not found')
+    assert.ok(page2.body.text.includes('21. 🔑 key21'), 'page 2 should number from 21')
     assert.ok(page2.body.text.includes('/link key21'), 'should list item 21 on page 2')
     assert.ok(!page2.body.text.includes('/link key01'), 'page 2 should not contain first item')
     const buttons2 = page2.body.attachments[0].payload.buttons.flat()
@@ -545,7 +546,7 @@ describe('callback_query handling', () => {
       callback: { payload: 'del:secret', user: { user_id: 999 } },
       message: { recipient: { chat_id: 1 } }
     })
-    const responseCall = fetchCalls.find(c => c.body?.text)
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('не найден или у вас нет прав'))
     assert.ok(responseCall, 'response expected')
     assert.ok(responseCall.body.text.includes('не найден или у вас нет прав'), 'unified message expected')
     assert.ok(!responseCall.body.text.includes('SECRET_TEXT'), 'must not leak message')
@@ -593,9 +594,23 @@ describe('callback_query handling', () => {
     })
     const responseCall = fetchCalls.find(c => c.body?.text?.includes('Ваши связки'))
     assert.ok(responseCall, 'own links not found')
-    assert.ok(responseCall.body.text.includes('Ваши связки'))
     assert.ok(responseCall.body.text.includes('/link own'), 'should list own link')
     assert.ok(!responseCall.body.text.includes('/link admin'), 'should not list foreign link')
+  })
+
+  it('should paginate creator links without back button', async () => {
+    for (let i = 1; i <= 21; i++) {
+      await setLinkFromStorage(`own${String(i).padStart(2, '0')}`, `https://o${i}.com`, 'M', 999)
+    }
+    await handleCallbackQuery({
+      callback: { payload: 'links_page:2', user: { user_id: 999 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Ваши связки'))
+    assert.ok(responseCall, 'own links page 2 not found')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload?.startsWith('links_page:')), 'should have pagination buttons')
+    assert.ok(!buttons.some(b => b.payload === 'back'), 'creator should NOT have back button')
   })
 })
 
@@ -628,7 +643,7 @@ describe('link_preview callback', () => {
       callback: { payload: 'link_preview:secret', user: { user_id: 999 } },
       message: { recipient: { chat_id: 1 } }
     })
-    const responseCall = fetchCalls.find(c => c.body?.text)
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('не найден или у вас нет прав'))
     assert.ok(responseCall, 'response expected')
     assert.ok(responseCall.body.text.includes('не найден или у вас нет прав'), 'unified message expected')
     assert.ok(!responseCall.body.text.includes('SECRET_TEXT'), 'must not leak message')
@@ -938,6 +953,16 @@ describe('/link command', () => {
     assert.ok(responseCall, 'usage not found')
   })
 
+  it('should show usage for /link with trailing spaces', async () => {
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/link  ' } },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Формат: /link <ключ>'))
+    assert.ok(responseCall, 'usage not found')
+  })
+
   it('should show not found for missing key (admin)', async () => {
     await handleMessage({
       chat_id: 1,
@@ -967,7 +992,7 @@ describe('/link command', () => {
       message: { body: { text: '/link secret' } },
       user: { user_id: 999 }
     })
-    const responseCall = fetchCalls.find(c => c.body?.text)
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('не найден или у вас нет прав'))
     assert.ok(responseCall, 'response expected')
     assert.ok(responseCall.body.text.includes('не найден или у вас нет прав'), 'unified message expected')
     assert.ok(!responseCall.body.text.includes('SECRET_TEXT'), 'must not leak message')
@@ -983,7 +1008,7 @@ describe('/link command', () => {
     })
     const responseCall = fetchCalls.find(c => c.body?.text?.includes('🔑 Ключ: long'))
     assert.ok(responseCall, 'card not found')
-    assert.ok(responseCall.body.text.includes('...'), 'should show ellipsis')
+    assert.ok(responseCall.body.text.includes('x'.repeat(3000) + '...'), 'should truncate at 3000 with ellipsis')
     assert.ok(responseCall.body.text.length < 4000, 'card should be within message limits')
   })
 

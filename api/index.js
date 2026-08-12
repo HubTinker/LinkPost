@@ -46,7 +46,7 @@ function alog (level, ...args) {
 
 const isAdmin = (userId) => ADMIN_IDS.includes(userId)
 
-// Callback-колбэки, доступные не-админам (с внутренней проверкой прав)
+// Колбэки, доступные не-админам (с внутренней проверкой прав)
 const ALLOWED_NON_ADMIN_PAYLOADS = ['links', 'back']
 const ALLOWED_NON_ADMIN_PREFIXES = ['links_page:', 'link_preview:', 'del:', 'confirm_del:']
 
@@ -110,7 +110,7 @@ async function showLinksList (chatId, userId, page = 1) {
   }
 
   const sorted = [...all].sort((a, b) => a.key.localeCompare(b.key))
-  const totalPages = Math.max(1, Math.ceil(sorted.length / LINKS_PAGE_SIZE))
+  const totalPages = Math.ceil(sorted.length / LINKS_PAGE_SIZE)
   const safePage = Math.min(Math.max(1, page), totalPages)
   const start = (safePage - 1) * LINKS_PAGE_SIZE
   const slice = sorted.slice(start, start + LINKS_PAGE_SIZE)
@@ -488,7 +488,7 @@ async function handleCallbackQuery (update) {
   if (!isAdmin(userId) && !isAllowedPayload) return
 
   // Track broadcast opens
-  if (cb.user?.user_id) {
+  if (isAdmin(userId) && cb.user?.user_id) {
     try {
       const recentBroadcasts = await getAllBroadcasts()
       const window72h = Date.now() - 72 * 3600000
@@ -1075,6 +1075,7 @@ async function handleCallbackQuery (update) {
     const key = cb.payload.slice(4)
     const existing = await getLink(key)
     if (!isAdmin(userId) && (!existing || !canManage(userId, existing))) {
+      alog('DEBUG', ' del: denied, key=%s, userId=%d', key, userId)
       return sendMessage(chatId, `⛔ Ключ "${key}" не найден или у вас нет прав.`)
     }
     if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
@@ -1095,6 +1096,7 @@ async function handleCallbackQuery (update) {
     const key = cb.payload.slice('confirm_del:'.length)
     const existing = await getLink(key)
     if (!isAdmin(userId) && (!existing || !canManage(userId, existing))) {
+      alog('DEBUG', ' confirm_del: denied, key=%s, userId=%d', key, userId)
       return sendMessage(chatId, `⛔ Ключ "${key}" не найден или у вас нет прав.`)
     }
     if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
