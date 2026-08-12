@@ -45,6 +45,23 @@ vercel dev
 | [API Reference](docs/api.md) | Эндпоинты webhook и setup-webhook |
 | [Конфигурация](docs/configuration.md) | Переменные окружения |
 
+## Деплой на Amvera
+
+Бот работает на **Amvera** (git-деплой по ветке `master`, сборка по `amvera.yaml`).
+
+```bash
+npm run deploy:amvera
+```
+
+Скрипт `scripts/deploy-amvera.sh`:
+
+1. Пушит текущую ветку в GitHub origin (как обычно);
+2. Коммитит прод-файлы поверх `amvera/master` и пушит в Amvera — это триггерит автоматическую пересборку.
+
+Переменные окружения (`BOT_TOKEN`, `SETUP_SECRET`, `KV_REST_API_URL`, `KV_REST_API_TOKEN`, `ADMIN_USER_IDS`, `BOT_NICK`, `NODE_EXTRA_CA_CERTS`) задаются в панели Amvera, `.env.local` на сервере не читается.
+
+> Альтернатива: MCP-сервер Amvera (`openmcp.msk0.amvera.ru/mcp`, токен `AMVERA_MCP`) — `uploadFiles` + `rebuildProject`.
+
 ## Лицензия
 
 MIT

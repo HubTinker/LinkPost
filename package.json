@@ -8,7 +8,8 @@
     "start": "node scripts/dev-server.js",
     "test": "node --test test/*.test.js",
     "poll": "node poll.js",
-    "deploy": "vercel --prod"
+    "deploy": "vercel --prod",
+    "deploy:amvera": "bash scripts/deploy-amvera.sh"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.4",
