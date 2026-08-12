@@ -657,7 +657,7 @@ async function showLinksList (chatId, userId, page = 1) {
 
 ```js
   if (text === '/links' || text.startsWith('/links ')) {
-    const [, pageArg] = parseArgs(text)
+    const [pageArg] = parseArgs(text)
     const page = pageArg ? Math.max(1, parseInt(pageArg, 10) || 1) : 1
     return showLinksList(chat_id, userId, page)
   }
