@@ -50,6 +50,8 @@ const isAdmin = (userId) => ADMIN_IDS.includes(userId)
 const ALLOWED_NON_ADMIN_PAYLOADS = ['links', 'back']
 const ALLOWED_NON_ADMIN_PREFIXES = ['links_page:', 'link_preview:', 'del:', 'confirm_del:']
 
+const canManage = (userId, link) => isAdmin(userId) || link?.creator_id === userId
+
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 
 /** Парсим аргументы: /command arg1 arg2 ...rest → ['arg1', 'arg2', ...] */
@@ -268,8 +270,7 @@ async function handleMessage (update) {
     if (!key) return sendMessage(chat_id, '⚠️ Укажи ключ: /dellink <ключ>')
     const existing = await getLink(key)
     if (!existing) return sendMessage(chat_id, `❌ Ключ "${key}" не найден.`)
-    const isAdminUser = isAdmin(userId)
-    if (!isAdminUser && existing.creator_id !== userId) {
+    if (!canManage(userId, existing)) {
       alog('DEBUG', ' /dellink: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
       return sendMessage(chat_id, '⛔ Вы можете удалять только свои ключи.')
     }
@@ -1018,11 +1019,10 @@ async function handleCallbackQuery (update) {
   if (cb.payload.startsWith('del:')) {
     const key = cb.payload.slice(4)
     const existing = await getLink(key)
-    if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
-    if (existing.creator_id !== userId) {
-      alog('DEBUG', ' del: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
-      return sendMessage(chatId, '⛔ Вы можете удалять только свои ключи.')
+    if (!isAdmin(userId) && (!existing || !canManage(userId, existing))) {
+      return sendMessage(chatId, `⛔ Ключ "${key}" не найден или у вас нет прав.`)
     }
+    if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
     alog('DEBUG', ' del: confirmation requested for key=%s, userId=%d', key, userId)
     return sendMessageWithKeyboard(
       chatId,
@@ -1039,15 +1039,14 @@ async function handleCallbackQuery (update) {
   if (cb.payload.startsWith('confirm_del:')) {
     const key = cb.payload.slice('confirm_del:'.length)
     const existing = await getLink(key)
-    if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
-    if (existing.creator_id !== userId) {
-      alog('DEBUG', ' confirm_del: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
-      return sendMessage(chatId, '⛔ Вы можете удалять только свои ключи.')
+    if (!isAdmin(userId) && (!existing || !canManage(userId, existing))) {
+      return sendMessage(chatId, `⛔ Ключ "${key}" не найден или у вас нет прав.`)
     }
+    if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
     alog('DEBUG', ' confirm_del: deleted key=%s by userId=%d', key, userId)
     await delLink(key)
-    return sendMessageWithKeyboard(chatId, `🗑 Связка "${key}" удалена.`, [
-      [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+    return sendMessageWithKeyboard(chatId, `✅ Связка "${key}" удалена.`, [
+      [{ type: 'callback', text: '🔙 К списку', data: 'links' }]
     ])
   }
 

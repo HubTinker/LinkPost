@@ -355,9 +355,13 @@ describe('callback_query handling', () => {
     })
     const saved = await kv.get('link:test')
     assert.equal(saved, null)
-    const responseCall = fetchCalls.find(c => c.body?.text?.includes('🗑'))
-    assert.ok(responseCall, 'delete confirmation not found')
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('удалена'))
+    assert.ok(responseCall, 'success message not found')
     assert.ok(responseCall.body.text.includes('test'), 'should mention key name')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    const backBtn = buttons.find(b => b.payload === 'links')
+    assert.ok(backBtn, 'should have back-to-list button')
+    assert.equal(backBtn.text, '🔙 К списку')
   })
 
   it('should show main menu on back callback', async () => {
@@ -435,9 +439,38 @@ describe('callback_query handling', () => {
     })
     const saved = await kv.get('link:key:sub')
     assert.equal(saved, null)
-    const responseCall = fetchCalls.find(c => c.body?.text?.includes('🗑'))
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('удалена'))
     assert.ok(responseCall, 'delete response not found')
     assert.ok(responseCall.body.text.includes('key:sub'), 'should mention full key with colon')
+  })
+
+  it('should allow admin to delete foreign link', async () => {
+    await kv.set('link:foreign', { url: 'https://x.com', message: 'Msg', creator_id: 999 })
+    await handleCallbackQuery({
+      callback: { payload: 'del:foreign', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    assert.ok(await kv.get('link:foreign'), 'link should NOT be deleted at del: step')
+    const confirmCall = fetchCalls.find(c => c.body?.text?.includes('🗑 Удалить'))
+    assert.ok(confirmCall, 'confirmation prompt not found')
+    await handleCallbackQuery({
+      callback: { payload: 'confirm_del:foreign', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    assert.equal(await kv.get('link:foreign'), null)
+  })
+
+  it('should deny del: for non-admin with unified message without leaking data', async () => {
+    await kv.set('link:secret', { url: 'https://secret.com', message: 'SECRET_TEXT', creator_id: 123 })
+    await handleCallbackQuery({
+      callback: { payload: 'del:secret', user: { user_id: 999 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text)
+    assert.ok(responseCall, 'response expected')
+    assert.ok(responseCall.body.text.includes('не найден или у вас нет прав'), 'unified message expected')
+    assert.ok(!responseCall.body.text.includes('SECRET_TEXT'), 'must not leak message')
+    assert.ok(!responseCall.body.text.includes('secret.com'), 'must not leak url')
   })
 
   it('should ignore disallowed callback for non-admin', async () => {
