@@ -46,6 +46,10 @@ function alog (level, ...args) {
 
 const isAdmin = (userId) => ADMIN_IDS.includes(userId)
 
+// Callback-колбэки, доступные не-админам (с внутренней проверкой прав)
+const ALLOWED_NON_ADMIN_PAYLOADS = ['links', 'back']
+const ALLOWED_NON_ADMIN_PREFIXES = ['links_page:', 'link_preview:', 'del:', 'confirm_del:']
+
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 
 /** Парсим аргументы: /command arg1 arg2 ...rest → ['arg1', 'arg2', ...] */
@@ -104,7 +108,8 @@ function buildLinksKeyboard (links) {
 }
 
 /** Показать админское главное меню */
-async function showAdminMenu (chatId) {
+async function showAdminMenu (chatId, userId) {
+  if (!isAdmin(userId)) return
   const count = await getUserCount()
   alog('DEBUG', ' showAdminMenu: показано меню для чата', chatId)
   await sendMessageWithKeyboard(
@@ -166,7 +171,7 @@ async function handleBotStarted (update) {
 
   // Обычный /start без payload
   if (isAdmin(user?.user_id)) {
-    await showAdminMenu(chat_id)
+    await showAdminMenu(chat_id, user?.user_id)
   } else {
     await sendMessage(chat_id, '👋 Привет! Введи ключ, который тебе выдали, и я пришлю ссылку на канал.')
   }
@@ -428,7 +433,9 @@ async function handleCallbackQuery (update) {
 
   const userId = cb.user.user_id
 
-  if (!isAdmin(userId)) return
+  const isAllowedPayload = ALLOWED_NON_ADMIN_PAYLOADS.includes(cb.payload) ||
+    ALLOWED_NON_ADMIN_PREFIXES.some(p => cb.payload.startsWith(p))
+  if (!isAdmin(userId) && !isAllowedPayload) return
 
   // Track broadcast opens
   if (cb.user?.user_id) {
@@ -1002,7 +1009,10 @@ async function handleCallbackQuery (update) {
 
   if (cb.payload === 'back') {
     alog('DEBUG', ' callback: back → главное меню')
-    return showAdminMenu(chatId)
+    if (!isAdmin(userId)) {
+      return sendMessage(chatId, 'Используйте /links для просмотра ваших связок.')
+    }
+    return showAdminMenu(chatId, userId)
   }
 
   if (cb.payload.startsWith('del:')) {

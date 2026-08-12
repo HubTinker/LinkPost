@@ -440,13 +440,23 @@ describe('callback_query handling', () => {
     assert.ok(responseCall.body.text.includes('key:sub'), 'should mention full key with colon')
   })
 
-  it('should silently ignore callback for non-admin', async () => {
+  it('should ignore disallowed callback for non-admin', async () => {
     await handleCallbackQuery({
-      callback: { payload: 'del:test', user: { user_id: 999 } },
+      callback: { payload: 'users', user: { user_id: 999 } },
       message: { recipient: { chat_id: 1 } }
     })
     const msgCalls = fetchCalls.filter(c => c.body.text)
     assert.equal(msgCalls.length, 0, 'non-admin should get no response')
+  })
+
+  it('should show hint on back callback for non-admin', async () => {
+    await handleCallbackQuery({
+      callback: { payload: 'back', user: { user_id: 999 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('/links'))
+    assert.ok(responseCall, 'hint not found')
+    assert.ok(!responseCall.body.text.includes('Админ'), 'should not show admin menu')
   })
 })
 
