@@ -593,8 +593,65 @@ describe('callback_query handling', () => {
     })
     const responseCall = fetchCalls.find(c => c.body?.text?.includes('Ваши связки'))
     assert.ok(responseCall, 'own links not found')
+    assert.ok(responseCall.body.text.includes('Ваши связки'))
     assert.ok(responseCall.body.text.includes('/link own'), 'should list own link')
     assert.ok(!responseCall.body.text.includes('/link admin'), 'should not list foreign link')
+  })
+})
+
+describe('link_preview callback', () => {
+  beforeEach(() => {
+    fetchCalls = []
+    kv._clear()
+  })
+
+  it('should send message exactly as user sees it', async () => {
+    await kv.set('link:vip', { url: 'https://channel.com', message: 'Welcome!' })
+    await handleCallbackQuery({
+      callback: { payload: 'link_preview:vip', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body.attachments)
+    assert.ok(responseCall, 'preview not found')
+    assert.equal(responseCall.body.text, 'Welcome!')
+    assert.equal(responseCall.body.attachments[0].type, 'inline_keyboard')
+    const btn = responseCall.body.attachments[0].payload.buttons[0][0]
+    assert.equal(btn.text, '👉 Перейти в канал')
+    assert.equal(btn.url, 'https://channel.com')
+    const subs = await kv.smembers('link_subs:vip')
+    assert.equal(subs.length, 0, 'preview must not register subscriber')
+  })
+
+  it('should deny foreign key for non-admin with unified message', async () => {
+    await kv.set('link:secret', { url: 'https://secret.com', message: 'SECRET_TEXT' })
+    await handleCallbackQuery({
+      callback: { payload: 'link_preview:secret', user: { user_id: 999 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text)
+    assert.ok(responseCall, 'response expected')
+    assert.ok(responseCall.body.text.includes('не найден или у вас нет прав'), 'unified message expected')
+    assert.ok(!responseCall.body.text.includes('SECRET_TEXT'), 'must not leak message')
+  })
+
+  it('should show not found for missing key', async () => {
+    await handleCallbackQuery({
+      callback: { payload: 'link_preview:nope', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('не найден'))
+    assert.ok(responseCall, 'not found expected')
+  })
+
+  it('should work for non-admin own key', async () => {
+    await setLinkFromStorage('own', 'https://own.com', 'Own msg', 999)
+    await handleCallbackQuery({
+      callback: { payload: 'link_preview:own', user: { user_id: 999 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body.attachments)
+    assert.ok(responseCall, 'preview not found')
+    assert.equal(responseCall.body.text, 'Own msg')
   })
 })
 

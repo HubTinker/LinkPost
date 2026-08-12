@@ -514,6 +514,17 @@ async function handleCallbackQuery (update) {
     return showLinksList(chatId, userId, page)
   }
 
+  if (cb.payload.startsWith('link_preview:')) {
+    const key = cb.payload.slice('link_preview:'.length)
+    const link = await getLink(key)
+    if (!isAdmin(userId) && (!link || !canManage(userId, link))) {
+      return sendMessage(chatId, `⛔ Ключ "${key}" не найден или у вас нет прав.`)
+    }
+    if (!link) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
+    alog('DEBUG', ' link_preview: key=%s, userId=%d', key, userId)
+    return sendMessageWithLink(chatId, link.message, { label: LINK_BUTTON_LABEL, url: link.url })
+  }
+
   if (cb.payload === 'create') {
     return sendMessageWithKeyboard(chatId,
       '➕ Создание связки:\n\n' +
