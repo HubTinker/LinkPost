@@ -1,5 +1,6 @@
 import dotenv from 'dotenv'
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 dotenv.config({ path: '.env.local' })
 
@@ -67,16 +68,37 @@ async function backup () {
     log('DEBUG', `user:${id} → saved`)
   }
 
-  const filename = `backup-${timestamp()}.json`
+  // Дневная статистика (stats:new:* / stats:new:total:*) — хранится с TTL 90 дней
+  dump.stats = {}
+  try {
+    if (typeof kv.scanIterator === 'function') {
+      const statKeys = []
+      for await (const key of kv.scanIterator({ match: 'stats:*', count: 500 })) {
+        statKeys.push(key)
+      }
+      for (const statKey of statKeys) {
+        dump.stats[statKey] = await kv.get(statKey)
+      }
+      log('DEBUG', `stats: ${statKeys.length} keys`)
+    } else {
+      log('WARN', 'scanIterator unavailable, stats keys skipped')
+    }
+  } catch (e) {
+    log('WARN', `stats collection failed: ${e.message}`)
+  }
+
+  mkdirSync('backups', { recursive: true })
+  const filename = join('backups', `backup-${timestamp()}.json`)
   writeFileSync(filename, JSON.stringify(dump, null, 2), 'utf-8')
 
   const stats = {
     links: Object.keys(dump.links).length,
     users: Object.keys(dump.users).length,
     subs: Object.keys(dump.link_subs).length,
-    user_links: Object.keys(dump.user_links).length
+    user_links: Object.keys(dump.user_links).length,
+    stat_keys: Object.keys(dump.stats).length
   }
-  log('INFO', `Done: ${stats.links} links, ${stats.users} users, ${stats.subs} subscription sets, ${stats.user_links} user_links sets`)
+  log('INFO', `Done: ${stats.links} links, ${stats.users} users, ${stats.subs} subscription sets, ${stats.user_links} user_links sets, ${stats.stat_keys} stats keys`)
   log('INFO', `Saved to ${filename}`)
 }
 

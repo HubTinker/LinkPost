@@ -1,0 +1,13 @@
+# amvera.yaml — конфигурация деплоя LinkPost Bot на Amvera
+version: null
+meta:
+  environment: nodejs
+  toolchain:
+    name: npm
+    version: 20
+build: {}
+run:
+  scriptName: scripts/amvera-server.js
+  persistenceMount: /data
+  containerPort: 3000
+serviceType: compute

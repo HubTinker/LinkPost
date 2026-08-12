@@ -948,7 +948,7 @@ async function handleCallbackQuery (update) {
 
   if (cb.payload.startsWith('broadcast_stop:')) {
     const bid = cb.payload.slice('broadcast_stop:'.length)
-    await updateBroadcast(bid, { status: 'cancelled' })
+    await updateBroadcast(bid, { status: 'cancelled', scheduled_at: null })
     alog('DEBUG', 'broadcast_stop: stopped %s', bid)
     return sendMessageWithKeyboard(chatId, `⏸ Рассылка #${bid} остановлена.`, [
       [{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]
@@ -1223,14 +1223,20 @@ app.get('/process-broadcasts', async (c) => {
         alog('INFO', 'broadcast %s: completed, stats=%j', b.id, chainStats)
       } else {
         console.log(`[broadcast] ${b.id}: progress ${newCursor}/${users.length}`)
-        // Set back to scheduled so next invocation picks it up
-        await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
-        // Continue with next batch
-        const host = c.req.header('host')
-        const scheme = c.req.header('x-forwarded-proto') || 'https'
-        await fetch(`${scheme}://${host}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
-          .then(r => r.json()).then(r => alog('INFO', 'broadcast %s: chain call result: %j', b.id, r))
-          .catch(e => console.warn('[broadcast] chain call failed:', e.message))
+        // Если админ остановил рассылку, пока шёл батч — не возобновляем
+        const fresh = await getBroadcast(b.id)
+        if (fresh && fresh.status === 'cancelled') {
+          alog('INFO', 'broadcast %s: stopped during batch, not rescheduling', b.id)
+        } else {
+          // Set back to scheduled so next invocation picks it up
+          await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
+          // Continue with next batch
+          const host = c.req.header('host')
+          const scheme = c.req.header('x-forwarded-proto') || 'https'
+          await fetch(`${scheme}://${host}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
+            .then(r => r.json()).then(r => alog('INFO', 'broadcast %s: chain call result: %j', b.id, r))
+            .catch(e => console.warn('[broadcast] chain call failed:', e.message))
+        }
       }
 
       results.push({ id: b.id, sent: sentInBatch, cursor: newCursor, total: users.length })
@@ -1244,11 +1250,19 @@ app.get('/process-broadcasts', async (c) => {
 })
 
 /**
- * CRON-эндпоинт (без secret) — вызывается Vercel Cron каждую минуту.
- * Безопасность: Vercel не даёт вызывать CRON-ы извне.
- * Подхватывает рассылки, которые оборвались, и продолжает их.
+ * CRON-эндпоинт — вызывается каждую минуту.
+ * На Vercel — платформенным cron (заголовок x-vercel-cron), на Amvera — внутренним таймером (localhost).
+ * Внешние запросы без этих признаков отклоняются.
  */
 app.get('/cron-process-broadcasts', async (c) => {
+  const host = (c.req.header('host') || '').toLowerCase()
+  const forwardedFor = c.req.header('x-forwarded-for') || ''
+  const isLocal = host.startsWith('localhost') || host.startsWith('127.0.0.1') || forwardedFor.includes('127.0.0.1')
+  const isVercelCron = c.req.header('x-vercel-cron') === '1'
+  if (!isLocal && !isVercelCron) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
   const broadcasts = await getScheduledBroadcasts()
   if (!broadcasts.length) {
     return c.json({ message: 'No broadcasts to process' })
@@ -1354,7 +1368,13 @@ app.get('/cron-process-broadcasts', async (c) => {
         }
       } else {
         console.log(`[broadcast] ${b.id}: cron progress ${newCursor}/${users.length}`)
-        await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
+        // Если админ остановил рассылку, пока шёл батч — не возобновляем
+        const fresh = await getBroadcast(b.id)
+        if (fresh && fresh.status === 'cancelled') {
+          alog('INFO', 'broadcast %s: stopped during batch, not rescheduling', b.id)
+        } else {
+          await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
+        }
       }
 
       results.push({ id: b.id, sent: sentInBatch, cursor: newCursor, total: users.length })

@@ -20,6 +20,13 @@
         "@modelcontextprotocol/server-filesystem",
         "."
       ]
+    },
+    "amvera": {
+      "type": "http",
+      "url": "https://openmcp.msk0.amvera.ru/mcp",
+      "headers": {
+        "Authorization": "Bearer ${AMVERA_TOKEN}"
+      }
     }
   }
 }
