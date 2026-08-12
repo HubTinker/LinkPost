@@ -195,7 +195,7 @@ describe('handleMessage commands', () => {
     assert.equal(msgCalls.length, 0, 'non-admin should get no response')
   })
 
-  it('/links should list all links', async () => {
+  it('/links should list links with commands', async () => {
     await kv.set('link:a', { url: 'https://a.com', message: 'A' })
     await kv.sadd('links_all', 'a')
     await kv.set('link:b', { url: 'https://b.com', message: 'B' })
@@ -205,13 +205,15 @@ describe('handleMessage commands', () => {
       message: { body: { text: '/links' } },
       user: { user_id: 123 }
     })
-    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('Активные связки'))
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('📋 Связки'))
     assert.ok(responseCall, 'links list not found')
-    assert.ok(responseCall.body.text.includes('a.com'), 'should list first link')
-    assert.ok(responseCall.body.text.includes('b.com'), 'should list second link')
+    assert.ok(responseCall.body.text.includes('/link a'), 'should show command for first link')
+    assert.ok(responseCall.body.text.includes('/link b'), 'should show command for second link')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'admin should have back button')
   })
 
-  it('/links should show empty state', async () => {
+  it('/links should show empty state for admin', async () => {
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/links' } },
@@ -219,16 +221,91 @@ describe('handleMessage commands', () => {
     })
     const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('📭'))
     assert.ok(responseCall, 'empty state not found')
+    assert.ok(responseCall.body.text.includes('Нет активных связок'), 'admin empty text expected')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'admin should have back button')
   })
 
-  it('/links for non-admin should be silently ignored', async () => {
+  it('/links should show empty state for non-admin without keyboard', async () => {
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/links' } },
       user: { user_id: 999 }
     })
-    const msgCalls = fetchCalls.filter(c => c.body.text)
-    assert.equal(msgCalls.length, 0, 'non-admin should get no response')
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('📭'))
+    assert.ok(responseCall, 'empty state not found')
+    assert.ok(responseCall.body.text.includes('У вас пока нет связок'), 'creator empty text expected')
+    assert.ok(!responseCall.body.attachments, 'creator should get no keyboard')
+  })
+
+  it('/links should paginate 20 per page and clamp page number', async () => {
+    for (let i = 1; i <= 21; i++) {
+      const key = `key${String(i).padStart(2, '0')}`
+      await kv.set(`link:${key}`, { url: `https://${key}.com`, message: 'M' })
+      await kv.sadd('links_all', key)
+    }
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/links' } },
+      user: { user_id: 123 }
+    })
+    const page1 = fetchCalls.find(c => c.body?.text?.includes('стр. 1 из 2'))
+    assert.ok(page1, 'page 1 header not found')
+    assert.ok(page1.body.text.includes('/link key01'), 'should list first item')
+    assert.ok(!page1.body.text.includes('/link key21'), 'page 1 should not contain item 21')
+    const buttons1 = page1.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons1.some(b => b.payload === 'links_page:2'), 'should have next button')
+    assert.ok(!buttons1.some(b => b.payload === 'links_page:0'), 'should not have prev button on page 1')
+
+    fetchCalls = []
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/links 2' } },
+      user: { user_id: 123 }
+    })
+    const page2 = fetchCalls.find(c => c.body?.text?.includes('стр. 2 из 2'))
+    assert.ok(page2, 'page 2 header not found')
+    assert.ok(page2.body.text.includes('/link key21'), 'should list item 21 on page 2')
+    assert.ok(!page2.body.text.includes('/link key01'), 'page 2 should not contain first item')
+    const buttons2 = page2.body.attachments[0].payload.buttons.flat()
+    assert.ok(!buttons2.some(b => b.payload === 'links_page:3'), 'should not have next button on last page')
+    assert.ok(buttons2.some(b => b.payload === 'links_page:1'), 'should have prev button on page 2')
+
+    fetchCalls = []
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/links 99' } },
+      user: { user_id: 123 }
+    })
+    assert.ok(fetchCalls.find(c => c.body?.text?.includes('стр. 2 из 2')), 'should clamp to last page')
+
+    fetchCalls = []
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/links abc' } },
+      user: { user_id: 123 }
+    })
+    assert.ok(fetchCalls.find(c => c.body?.text?.includes('стр. 1 из 2')), 'non-numeric page should default to 1')
+  })
+
+  it('/links should sort links by key', async () => {
+    await kv.set('link:b', { url: 'https://b.com', message: 'B' })
+    await kv.sadd('links_all', 'b')
+    await kv.set('link:a', { url: 'https://a.com', message: 'A' })
+    await kv.sadd('links_all', 'a')
+    await kv.set('link:c', { url: 'https://c.com', message: 'C' })
+    await kv.sadd('links_all', 'c')
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/links' } },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('📋 Связки'))
+    assert.ok(responseCall, 'list not found')
+    const idxA = responseCall.body.text.indexOf('/link a')
+    const idxB = responseCall.body.text.indexOf('/link b')
+    const idxC = responseCall.body.text.indexOf('/link c')
+    assert.ok(idxA < idxB && idxB < idxC, 'should be sorted a, b, c')
   })
 
   it('/users should return user count', async () => {
@@ -374,17 +451,19 @@ describe('callback_query handling', () => {
     assert.ok(responseCall.body.text.includes('Админ'), 'should show admin menu')
   })
 
-  it('should show links list with back button', async () => {
+  it('should show links list via links callback', async () => {
     await kv.set('link:a', { url: 'https://a.com', message: 'A' })
     await kv.sadd('links_all', 'a')
     await handleCallbackQuery({
       callback: { payload: 'links', user: { user_id: 123 } },
       message: { recipient: { chat_id: 1 } }
     })
-    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Активные связки'))
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('📋 Связки'))
     assert.ok(responseCall, 'links list not found')
+    assert.ok(responseCall.body.text.includes('/link a'), 'should show link command')
     const buttons = responseCall.body.attachments[0].payload.buttons.flat()
     assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+    assert.ok(!buttons.some(b => b.payload?.startsWith('del:')), 'list should not have delete buttons')
   })
 
   it('should show empty links state with back button', async () => {
@@ -491,24 +570,52 @@ describe('callback_query handling', () => {
     assert.ok(responseCall, 'hint not found')
     assert.ok(!responseCall.body.text.includes('Админ'), 'should not show admin menu')
   })
+
+  it('should navigate via links_page callback', async () => {
+    for (let i = 1; i <= 21; i++) {
+      const key = `key${String(i).padStart(2, '0')}`
+      await kv.set(`link:${key}`, { url: `https://${key}.com`, message: 'M' })
+      await kv.sadd('links_all', key)
+    }
+    await handleCallbackQuery({
+      callback: { payload: 'links_page:2', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    assert.ok(fetchCalls.find(c => c.body?.text?.includes('стр. 2 из 2')), 'page 2 not found')
+  })
+
+  it('should show own links on links_page for non-admin', async () => {
+    await setLinkFromStorage('own', 'https://own.com', 'Own', 999)
+    await setLinkFromStorage('admin', 'https://admin.com', 'Admin', 123)
+    await handleCallbackQuery({
+      callback: { payload: 'links_page:1', user: { user_id: 999 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Ваши связки'))
+    assert.ok(responseCall, 'own links not found')
+    assert.ok(responseCall.body.text.includes('/link own'), 'should list own link')
+    assert.ok(!responseCall.body.text.includes('/link admin'), 'should not list foreign link')
+  })
 })
 
-describe('non-admin commands are silently ignored', () => {
+describe('non-admin command access', () => {
   beforeEach(() => {
     fetchCalls = []
     kv._clear()
   })
 
-  it('/links should be silently ignored for non-admin', async () => {
-    await setLinkFromStorage('a', 'https://a.com', 'A', 999)
-    await setLinkFromStorage('b', 'https://b.com', 'B', 123)
+  it('/links should show own links for non-admin', async () => {
+    await setLinkFromStorage('own', 'https://own.com', 'Own', 999)
+    await setLinkFromStorage('admin', 'https://admin.com', 'Admin', 123)
     await handleMessage({
       chat_id: 1,
       message: { body: { text: '/links' } },
       user: { user_id: 999 }
     })
-    const msgCalls = fetchCalls.filter(c => c.body.text)
-    assert.equal(msgCalls.length, 0, 'non-admin should get no response')
+    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Ваши связки'))
+    assert.ok(responseCall, 'own links list not found')
+    assert.ok(responseCall.body.text.includes('/link own'), 'should list own link')
+    assert.ok(!responseCall.body.text.includes('/link admin'), 'should NOT list foreign link')
   })
 
   it('/dellink should be silently ignored for non-admin (own key)', async () => {

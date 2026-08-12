@@ -52,6 +52,8 @@ const ALLOWED_NON_ADMIN_PREFIXES = ['links_page:', 'link_preview:', 'del:', 'con
 
 const canManage = (userId, link) => isAdmin(userId) || link?.creator_id === userId
 
+const LINKS_PAGE_SIZE = 20
+
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 
 /** Парсим аргументы: /command arg1 arg2 ...rest → ['arg1', 'arg2', ...] */
@@ -90,23 +92,45 @@ function formatBroadcastDetail (b) {
 const DENY = (chatId) =>
   sendMessage(chatId, '⛔ Эта команда доступна только администратору.')
 
-/** Отформатировать список связок */
-function formatLinksList (links, showCreator = false) {
-  return links.map((l, i) => {
-    let line = `${i + 1}. 🔑 ${l.key}\n   🔗 ${l.url}`
-    if (l.message) line += `\n   💬 ${l.message}`
-    if (showCreator && l.creator_id != null) line += `\n   👤 Создатель: ID=${l.creator_id}`
-    return line
-  }).join('\n\n')
-}
+/** Показать список связок с пагинацией (админ — все, создатель — свои) */
+async function showLinksList (chatId, userId, page = 1) {
+  const isAdminUser = isAdmin(userId)
+  const all = isAdminUser ? await getAllLinks() : await getLinksByCreator(userId)
 
-/** Построить клавиатуру с кнопками удаления для списка связок */
-function buildLinksKeyboard (links) {
-  const buttons = links.map(l => [
-    { type: 'callback', text: `🗑 ${l.key}`, data: `del:${l.key}` }
-  ])
-  buttons.push([{ type: 'callback', text: '🔙 Назад', data: 'back' }])
-  return buttons
+  if (!all.length) {
+    const text = isAdminUser
+      ? '📭 Нет активных связок. Добавьте первую через /setlink.'
+      : '📭 У вас пока нет связок.'
+    if (isAdminUser) {
+      return sendMessageWithKeyboard(chatId, text, [
+        [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
+      ])
+    }
+    return sendMessage(chatId, text)
+  }
+
+  const sorted = [...all].sort((a, b) => a.key.localeCompare(b.key))
+  const totalPages = Math.max(1, Math.ceil(sorted.length / LINKS_PAGE_SIZE))
+  const safePage = Math.min(Math.max(1, page), totalPages)
+  const start = (safePage - 1) * LINKS_PAGE_SIZE
+  const slice = sorted.slice(start, start + LINKS_PAGE_SIZE)
+
+  let out = (isAdminUser ? '📋 Связки' : '📋 Ваши связки')
+  out += ` (${sorted.length}, стр. ${safePage} из ${totalPages})\n\n`
+  out += slice.map((l, i) => `${start + i + 1}. 🔑 ${l.key} — /link ${l.key}`).join('\n')
+
+  const rows = []
+  const navRow = []
+  if (safePage > 1) navRow.push({ type: 'callback', text: '⬅️', data: `links_page:${safePage - 1}` })
+  if (safePage < totalPages) navRow.push({ type: 'callback', text: '➡️', data: `links_page:${safePage + 1}` })
+  if (navRow.length) rows.push(navRow)
+  if (isAdminUser) rows.push([{ type: 'callback', text: '🔙 Назад', data: 'back' }])
+
+  // У создателя на единственной странице клавиатуры нет — пустую inline_keyboard не отправляем
+  if (!rows.length) return sendMessage(chatId, out)
+
+  alog('DEBUG', ' showLinksList: userId=%d, page=%d, total=%d, totalPages=%d', userId, safePage, sorted.length, totalPages)
+  return sendMessageWithKeyboard(chatId, out, rows)
 }
 
 /** Показать админское главное меню */
@@ -228,8 +252,12 @@ async function handleMessage (update) {
     return handleBotStarted({ chat_id, user, payload: null })
   }
 
-  // Не-админы — молча игнорируем все команды (без сообщений об ошибках)
-  if (!isAdmin(userId) && text.startsWith('/')) return
+  // Не-админам разрешены только /links и /link — остальные команды молча игнорируем
+  if (!isAdmin(userId) && text.startsWith('/')) {
+    const isAllowedLinkCmd = text === '/links' || text.startsWith('/links ') ||
+      text === '/link' || text.startsWith('/link ')
+    if (!isAllowedLinkCmd) return
+  }
 
   if (text.startsWith('/setlink')) {
     const [key, url, ...rest] = parseArgs(text)
@@ -287,26 +315,10 @@ async function handleMessage (update) {
     )
   }
 
-  if (text.startsWith('/links')) {
-    const isAdminUser = isAdmin(userId)
-    const links = isAdminUser ? await getAllLinks() : await getLinksByCreator(userId)
-    alog('DEBUG', ' /links: userId=%d, isAdmin=%s, found=%d links', userId, isAdminUser, links.length)
-    if (!links.length) {
-      return sendMessageWithKeyboard(chat_id, '📭 Нет активных связок. Добавьте первую через /setlink.', [
-        [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
-      ])
-    }
-    if (isAdminUser) {
-      return sendMessageWithKeyboard(
-        chat_id,
-        `📋 Активные связки (${links.length}):\n\n${formatLinksList(links, true)}`,
-        buildLinksKeyboard(links)
-      )
-    }
-    return sendMessage(
-      chat_id,
-      `📋 Ваши связки (${links.length}):\n\n${formatLinksList(links, false)}`
-    )
+  if (text === '/links' || text.startsWith('/links ')) {
+    const [pageArg] = parseArgs(text)
+    const page = pageArg ? Math.max(1, parseInt(pageArg, 10) || 1) : 1
+    return showLinksList(chat_id, userId, page)
   }
 
   if (text.startsWith('/users')) {
@@ -457,17 +469,12 @@ async function handleCallbackQuery (update) {
   }
 
   if (cb.payload === 'links') {
-    const links = await getAllLinks()
-    if (!links.length) {
-      return sendMessageWithKeyboard(chatId, '📭 Нет активных связок.', [
-        [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
-      ])
-    }
-    return sendMessageWithKeyboard(
-      chatId,
-      `📋 Активные связки (${links.length}):\n\n${formatLinksList(links, true)}`,
-      buildLinksKeyboard(links)
-    )
+    return showLinksList(chatId, userId, 1)
+  }
+
+  if (cb.payload.startsWith('links_page:')) {
+    const page = parseInt(cb.payload.slice('links_page:'.length), 10) || 1
+    return showLinksList(chatId, userId, page)
   }
 
   if (cb.payload === 'create') {
