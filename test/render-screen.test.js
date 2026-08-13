@@ -10,7 +10,7 @@ global.fetch = async (url, opts) => {
   if (global.fetchFailUrls?.some(part => String(url).includes(part))) {
     throw new Error('fetch failed (mocked)')
   }
-  return { ok: true, json: async () => ({ ok: true, message_id: 999 }), text: async () => '', status: 200 }
+  return { ok: true, json: async () => ({ ok: true, message: { body: { mid: 999 } } }), text: async () => '', status: 200 }
 }
 
 const { kv } = await import('../lib/kv-mock.js')

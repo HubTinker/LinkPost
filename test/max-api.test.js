@@ -57,7 +57,7 @@ describe('sendMessageWithLink', () => {
   })
 })
 
-const { editMessageWithKeyboard, deleteMessage } = await import('../lib/max-api.js')
+const { editMessageWithKeyboard, deleteMessage, extractMessageId } = await import('../lib/max-api.js')
 
 describe('editMessageWithKeyboard', () => {
   it('should throw when chatId is null', async () => {
@@ -115,5 +115,21 @@ describe('deleteMessage', () => {
     assert.ok(lastFetchUrl.includes('chat_id=1'))
     assert.ok(lastFetchUrl.includes('message_id=90'))
     assert.equal(lastFetchOpts.body, undefined)
+  })
+})
+
+
+describe('extractMessageId', () => {
+  it('should extract mid from message.body.mid (real MAX API shape)', () => {
+    assert.equal(extractMessageId({ message: { body: { mid: 'mid.abc' } } }), 'mid.abc')
+  })
+
+  it('should fall back to message_id', () => {
+    assert.equal(extractMessageId({ message_id: 42 }), 42)
+  })
+
+  it('should return null when no id present', () => {
+    assert.equal(extractMessageId({ ok: true }), null)
+    assert.equal(extractMessageId(null), null)
   })
 })

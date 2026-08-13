@@ -8,7 +8,7 @@
 
 import { Hono } from 'hono'
 import { handle } from 'hono/vercel'
-import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead, sendBroadcastMessage, editMessage, editMessageWithKeyboard, deleteMessage } from '../lib/max-api.js'
+import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead, sendBroadcastMessage, editMessage, editMessageWithKeyboard, deleteMessage, extractMessageId } from '../lib/max-api.js'
 import { setNavMessageId, getNavMessageId } from '../lib/nav.js'
 import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
@@ -231,7 +231,8 @@ async function renderScreen ({ chatId, editMsgId, text, buttons, useNavFallback 
   }
   try {
     const resp = await sendMessageWithKeyboard(chatId, text, buttons)
-    if (resp?.message_id) await saveNavMessageIdSafely(chatId, resp.message_id)
+    const respMid = extractMessageId(resp)
+    if (respMid != null) await saveNavMessageIdSafely(chatId, respMid)
     return resp
   } catch (e) {
     alog('WARN', 'renderScreen: send failed: %s', e.message)
@@ -541,7 +542,7 @@ async function handleCallbackQuery (update) {
   if (!cb?.payload || !chatId || !cb?.user?.user_id) return
 
   const userId = cb.user.user_id
-  const editMsgId = update.message?.message_id ?? null
+  const editMsgId = update.message?.body?.mid ?? update.message?.message_id ?? null
 
   const isAllowedPayload = ALLOWED_NON_ADMIN_PAYLOADS.includes(cb.payload) ||
     ALLOWED_NON_ADMIN_PREFIXES.some(p => cb.payload.startsWith(p))
@@ -914,8 +915,9 @@ async function handleCallbackQuery (update) {
           )
         } else {
           sendMessage(adminChatId, progressMsg).then(resp => {
-            if (resp?.message_id) {
-              setProgressMessageId(bid, resp.message_id).catch(() => {})
+            const respMid = extractMessageId(resp)
+            if (respMid != null) {
+              setProgressMessageId(bid, respMid).catch(() => {})
             }
           }).catch(e =>
             console.warn('[broadcast] progress send failed:', e.message)
@@ -1330,8 +1332,9 @@ app.get('/process-broadcasts', async (c) => {
             )
           } else {
             sendMessage(adminChatId, progressMsg).then(resp => {
-              if (resp?.message_id) {
-                setProgressMessageId(b.id, resp.message_id).catch(() => {})
+              const respMid = extractMessageId(resp)
+              if (respMid != null) {
+                setProgressMessageId(b.id, respMid).catch(() => {})
               }
             }).catch(e =>
               console.warn('[broadcast] progress send failed:', e.message)
@@ -1484,8 +1487,9 @@ app.get('/cron-process-broadcasts', async (c) => {
             )
           } else {
             sendMessage(adminChatId, msg).then(resp => {
-              if (resp?.message_id) {
-                setProgressMessageId(b.id, resp.message_id).catch(() => {})
+              const respMid = extractMessageId(resp)
+              if (respMid != null) {
+                setProgressMessageId(b.id, respMid).catch(() => {})
               }
             }).catch(e =>
               console.warn('[broadcast] cron progress send failed:', e.message)

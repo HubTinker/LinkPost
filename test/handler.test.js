@@ -11,7 +11,7 @@ global.fetch = async (url, opts) => {
   fetchCalls.push({ url, method: opts?.method || 'GET', body: JSON.parse(opts?.body || '{}') })
   return {
     ok: true,
-    json: async () => ({ ok: true }),
+    json: async () => ({ ok: true, message: { body: { mid: 999 } } }),
     text: async () => '',
     status: 200
   }
@@ -1159,7 +1159,7 @@ describe('single-screen navigation', () => {
     await kv.sadd('links_all', 'a')
     await handleCallbackQuery({
       callback: { payload: 'links', user: { user_id: 123 } },
-      message: { recipient: { chat_id: 1 }, message_id: 90 }
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
     })
     const edits = fetchCalls.filter(c => c.url?.includes('message_id=90') && c.method === 'PUT')
     assert.equal(edits.length, 1, 'source message should be edited once')
@@ -1196,7 +1196,7 @@ describe('single-screen navigation', () => {
     await kv.set('link:vip', { url: 'https://channel.com', message: 'Welcome!' })
     await handleCallbackQuery({
       callback: { payload: 'link_preview:vip', user: { user_id: 123 } },
-      message: { recipient: { chat_id: 1 }, message_id: 90 }
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
     })
     // Preview — контент: новое сообщение, edit не используется
     const sends = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id'))
@@ -1261,7 +1261,7 @@ describe('broadcast status screen', () => {
     const b = await createBroadcast({ text: 'Launch', created_by: 123 })
     await handleCallbackQuery({
       callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
-      message: { recipient: { chat_id: 1 }, message_id: 90 }
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
     })
     // Экран «запущена» отредактирован на месте (message_id=90)
     const launched = fetchCalls.find(c => c.url?.includes('message_id=90') && c.method === 'PUT')
@@ -1269,6 +1269,7 @@ describe('broadcast status screen', () => {
     assert.ok(launched.body.text.includes('запущена'), 'launched screen text expected')
     // status_message_id = id отредактированного экрана, сохранён до запуска цепочки
     assert.strictEqual(await kv.get(`broadcast:${b.id}:status_msg`), 90)
+    assert.strictEqual(await kv.get(`broadcast:${b.id}:progress_msg`), 999, 'progress message id stored from mid')
     // summary не должен уходить (рассылка не завершена);
     // прогресс-сообщение (содержит «Прогресс:») — не summary, исключаем из подсчёта
     assert.equal(fetchCalls.filter(c => c.body?.text?.includes('Отправлено:') && !c.body?.text?.includes('Прогресс:')).length, 0)
@@ -1280,7 +1281,7 @@ describe('broadcast status screen', () => {
     const b = await createBroadcast({ text: 'Short', created_by: 123 })
     await handleCallbackQuery({
       callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
-      message: { recipient: { chat_id: 1 }, message_id: 90 }
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
     })
     assert.strictEqual(await kv.get(`broadcast:${b.id}:status_msg`), null, 'no status id on immediate completion')
     const done = fetchCalls.find(c => c.url?.includes('message_id=90') && c.method === 'PUT')
