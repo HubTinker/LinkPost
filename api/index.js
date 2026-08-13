@@ -94,7 +94,7 @@ const DENY = (chatId) =>
   sendMessage(chatId, '⛔ Эта команда доступна только администратору.')
 
 /** Показать список связок с пагинацией (админ — все, создатель — свои) */
-async function showLinksList (chatId, userId, page = 1) {
+async function showLinksList (chatId, userId, page = 1, editMsgId = null) {
   const isAdminUser = isAdmin(userId)
   const all = isAdminUser ? await getAllLinks() : await getLinksByCreator(userId)
 
@@ -103,9 +103,9 @@ async function showLinksList (chatId, userId, page = 1) {
       ? '📭 Нет активных связок. Добавьте первую через /setlink.'
       : '📭 У вас пока нет связок.'
     if (isAdminUser) {
-      return sendMessageWithKeyboard(chatId, text, [
+      return renderScreen({ chatId, editMsgId, text, buttons: [
         [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
-      ])
+      ] })
     }
     return sendMessage(chatId, text)
   }
@@ -131,13 +131,13 @@ async function showLinksList (chatId, userId, page = 1) {
   if (!rows.length) return sendMessage(chatId, out)
 
   alog('DEBUG', ' showLinksList: userId=%d, page=%d, total=%d, totalPages=%d', userId, safePage, sorted.length, totalPages)
-  return sendMessageWithKeyboard(chatId, out, rows)
+  return renderScreen({ chatId, editMsgId, text: out, buttons: rows })
 }
 
 const MAX_LINK_MESSAGE_DISPLAY = 3000
 
 /** Показать карточку связки: текст, ссылка, диплинк + кнопки */
-async function showLinkCard (chatId, userId, key) {
+async function showLinkCard (chatId, userId, key, editMsgId = null) {
   const link = await getLink(key)
   if (!isAdmin(userId) && (!link || !canManage(userId, link))) {
     return sendMessage(chatId, `⛔ Ключ "${key}" не найден или у вас нет прав.`)
@@ -154,31 +154,30 @@ async function showLinkCard (chatId, userId, key) {
     `🔗 Ссылка: ${link.url}\n\n` +
     `🔗 Диплинк: https://max.ru/${BOT_NICK}?start=${key}`
 
-  return sendMessageWithKeyboard(chatId, text, [
+  return renderScreen({ chatId, editMsgId, text, buttons: [
     [
       { type: 'callback', text: '🗑 Удалить', data: `del:${key}` },
       { type: 'callback', text: '👁 Посмотреть', data: `link_preview:${key}` }
     ],
     [{ type: 'callback', text: '🔙 Назад', data: 'links' }]
-  ])
+  ] })
 }
 
 /** Показать админское главное меню */
-async function showAdminMenu (chatId, userId) {
+async function showAdminMenu (chatId, userId, editMsgId = null) {
   if (!isAdmin(userId)) return
   const count = await getUserCount()
   alog('DEBUG', ' showAdminMenu: показано меню для чата', chatId)
-  await sendMessageWithKeyboard(
-    chatId,
+  await renderScreen({ chatId, editMsgId, text:
     `👋 Привет, Админ! В базе ${count} пользователей.`,
-    [
+    buttons: [
       [{ type: 'callback', text: '📋 Связки', data: 'links' },
        { type: 'callback', text: '➕ Создать', data: 'create' }],
       [{ type: 'callback', text: '👥 Пользователи', data: 'users' },
        { type: 'callback', text: '📊 Статистика', data: 'stats' }],
       [{ type: 'callback', text: '📨 Рассылка', data: 'broadcast_menu' }]
     ]
-  )
+  })
 }
 
 /** Best-effort запись nav_msg: сбой KV не должен ломать UI (правка плана №1) */
@@ -400,7 +399,7 @@ async function handleMessage (update) {
   if (text === '/links' || text.startsWith('/links ')) {
     const [pageArg] = parseArgs(text)
     const page = pageArg ? Math.max(1, parseInt(pageArg, 10) || 1) : 1
-    return showLinksList(chat_id, userId, page)
+    return showLinksList(chat_id, userId, page, null)
   }
 
   if (text === '/link' || text.startsWith('/link ')) {
@@ -408,7 +407,7 @@ async function handleMessage (update) {
     if (!key) {
       return sendMessage(chat_id, '⚠️ Формат: /link <ключ>\n\nПример:\n/link vip')
     }
-    return showLinkCard(chat_id, userId, key)
+    return showLinkCard(chat_id, userId, key, null)
   }
 
   if (text.startsWith('/users')) {
@@ -535,6 +534,7 @@ async function handleCallbackQuery (update) {
   if (!cb?.payload || !chatId || !cb?.user?.user_id) return
 
   const userId = cb.user.user_id
+  const editMsgId = update.message?.message_id ?? null
 
   const isAllowedPayload = ALLOWED_NON_ADMIN_PAYLOADS.includes(cb.payload) ||
     ALLOWED_NON_ADMIN_PREFIXES.some(p => cb.payload.startsWith(p))
@@ -559,12 +559,12 @@ async function handleCallbackQuery (update) {
   }
 
   if (cb.payload === 'links') {
-    return showLinksList(chatId, userId, 1)
+    return showLinksList(chatId, userId, 1, editMsgId)
   }
 
   if (cb.payload.startsWith('links_page:')) {
     const page = parseInt(cb.payload.slice('links_page:'.length), 10) || 1
-    return showLinksList(chatId, userId, page)
+    return showLinksList(chatId, userId, page, editMsgId)
   }
 
   if (cb.payload.startsWith('link_preview:')) {
@@ -579,19 +579,19 @@ async function handleCallbackQuery (update) {
   }
 
   if (cb.payload === 'create') {
-    return sendMessageWithKeyboard(chatId,
+    return renderScreen({ chatId, editMsgId, text:
       '➕ Создание связки:\n\n' +
       '/setlink <ключ> <url> <сообщение>\n\n' +
       'Пример:\n/setlink vip https://max.ru/channel/xxx Добро пожаловать! 🎉',
-      [[{ type: 'callback', text: '🔙 Назад', data: 'back' }]]
-    )
+      buttons: [[{ type: 'callback', text: '🔙 Назад', data: 'back' }]]
+    })
   }
 
   if (cb.payload === 'users') {
     const count = await getUserCount()
-    return sendMessageWithKeyboard(chatId, `👥 В базе ${count} пользователей.`, [
+    return renderScreen({ chatId, editMsgId, text: `👥 В базе ${count} пользователей.`, buttons: [
       [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
-    ])
+    ] })
   }
 
   if (cb.payload === 'broadcast_menu') {
@@ -604,20 +604,20 @@ async function handleCallbackQuery (update) {
     } catch (e) {
       alog('WARN', 'broadcast_menu: failed to load broadcasts', e.message)
     }
-    return sendMessageWithKeyboard(chatId,
+    return renderScreen({ chatId, editMsgId, text:
       '📨 Рассылки\n\n' +
       `📝 Черновики: ${stats.draft}\n` +
       `⏳ Запланировано: ${stats.scheduled}\n` +
       `📤 Отправляется: ${stats.sending}\n` +
       `✅ Отправлено: ${stats.sent}\n` +
       `⏸ Отменено: ${stats.cancelled}`,
-      [
+      buttons: [
         [{ type: 'callback', text: '📝 Новая рассылка', data: 'broadcast_create' }],
         [{ type: 'callback', text: '📋 Список рассылок', data: 'broadcast_list' }],
         [{ type: 'callback', text: '🧹 Очистить неактивных', data: 'broadcast_clear_stale' }],
         [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
       ]
-    )
+    })
   }
 
   if (cb.payload === 'broadcast_create') {
@@ -632,23 +632,23 @@ async function handleCallbackQuery (update) {
       created_by: userId
     })
     alog('DEBUG', 'broadcast_create: new draft %s for userId=%d', draft.id, userId)
-    return sendMessageWithKeyboard(chatId,
+    return renderScreen({ chatId, editMsgId, text:
       '📝 Новая рассылка (шаг 1/4)\n\n' +
       'Введите текст сообщения (поддерживается Markdown):\n\n' +
       `ID черновика: ${draft.id}`,
-      [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-    )
+      buttons: [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+    })
   }
 
   if (cb.payload === 'stats') {
     alog('DEBUG', ' callback: stats → подменю')
-    return sendMessageWithKeyboard(chatId, '📊 Статистика\n\nВыберите раздел:', [
+    return renderScreen({ chatId, editMsgId, text: '📊 Статистика\n\nВыберите раздел:', buttons: [
       [{ type: 'callback', text: '📈 Общая', data: 'stats_general' }],
       [{ type: 'callback', text: '🔑 По ключу', data: 'stats_by_key' }],
       [{ type: 'callback', text: '🏆 Топ ключей', data: 'stats_top' }],
       [{ type: 'callback', text: '📨 Рассылки', data: 'stats_broadcasts_overall' }],
       [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
-    ])
+    ] })
   }
 
   if (cb.payload === 'stats_general') {
@@ -667,18 +667,18 @@ async function handleCallbackQuery (update) {
     msg += `📈 Новых за неделю: +${weekTotal}\n`
     msg += `🔑 Активных связок: ${totalLinks}`
 
-    return sendMessageWithKeyboard(chatId, msg, [
+    return renderScreen({ chatId, editMsgId, text: msg, buttons: [
       [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
-    ])
+    ] })
   }
 
   if (cb.payload === 'stats_by_key') {
     alog('DEBUG', ' callback: stats_by_key → список ключей')
     const links = await getAllLinks()
     if (!links.length) {
-      return sendMessageWithKeyboard(chatId, '📭 Нет активных связок.', [
+      return renderScreen({ chatId, editMsgId, text: '📭 Нет активных связок.', buttons: [
         [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
-      ])
+      ] })
     }
     const buttons = []
     for (let i = 0; i < links.length; i += 2) {
@@ -689,7 +689,7 @@ async function handleCallbackQuery (update) {
       buttons.push(row)
     }
     buttons.push([{ type: 'callback', text: '🔙 Назад', data: 'back' }])
-    return sendMessageWithKeyboard(chatId, `🔑 Выберите ключ (${links.length}):`, buttons)
+    return renderScreen({ chatId, editMsgId, text: `🔑 Выберите ключ (${links.length}):`, buttons })
   }
 
   if (cb.payload.startsWith('stats_key:')) {
@@ -697,9 +697,9 @@ async function handleCallbackQuery (update) {
     alog('DEBUG', ' callback: stats_key → key=%s', key)
     const link = await getLink(key)
     if (!link) {
-      return sendMessageWithKeyboard(chatId, `❌ Ключ "${key}" не найден.`, [
+      return renderScreen({ chatId, editMsgId, text: `❌ Ключ "${key}" не найден.`, buttons: [
         [{ type: 'callback', text: '🔙 К списку', data: 'stats_by_key' }]
-      ])
+      ] })
     }
     const total = await getLinkSubCount(key)
     const today = await getDailyStat(key, daysAgo(0))
@@ -716,30 +716,30 @@ async function handleCallbackQuery (update) {
     if (age != null) msg += `🕐 Возраст ключа: ${age} дн.\n`
     msg += `\n🔗 ${link.url}`
 
-    return sendMessageWithKeyboard(chatId, msg, [
+    return renderScreen({ chatId, editMsgId, text: msg, buttons: [
       [
         { type: 'callback', text: '🗑 Удалить', data: `del:${key}` },
         { type: 'callback', text: '🔙 К списку', data: 'stats_by_key' }
       ]
-    ])
+    ] })
   }
 
   if (cb.payload === 'stats_top') {
     alog('DEBUG', ' callback: stats_top → рейтинг ключей')
     const ranked = await getLinksRankedBySubs()
     if (!ranked.length) {
-      return sendMessageWithKeyboard(chatId, '📭 Нет активных связок.', [
+      return renderScreen({ chatId, editMsgId, text: '📭 Нет активных связок.', buttons: [
         [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
-      ])
+      ] })
     }
     const top10 = ranked.slice(0, 10)
     let msg = '🏆 Топ ключей по подписчикам\n\n'
     top10.forEach((l, i) => {
       msg += `${i + 1}. 🔑 ${l.key} → 👥 ${l.subCount}\n`
     })
-    return sendMessageWithKeyboard(chatId, msg, [
+    return renderScreen({ chatId, editMsgId, text: msg, buttons: [
       [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
-    ])
+    ] })
   }
 
   if (cb.payload === 'stats_broadcasts_overall') {
@@ -762,25 +762,25 @@ async function handleCallbackQuery (update) {
     msg += `🚫 Всего отписок: ${totalUnsubbed}\n`
     msg += `❌ Всего ошибок: ${totalFailed}`
     alog('DEBUG', 'stats_broadcasts_overall: all=%d, withSent=%d, totalSent=%d', all.length, count, totalSent)
-    return sendMessageWithKeyboard(chatId, msg, [
+    return renderScreen({ chatId, editMsgId, text: msg, buttons: [
       [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
-    ])
+    ] })
   }
 
   if (cb.payload.startsWith('broadcast_images_done:')) {
     const bid = cb.payload.slice('broadcast_images_done:'.length)
     await updateBroadcast(bid, { _images_done: true })
-    return sendMessageWithKeyboard(chatId,
+    return renderScreen({ chatId, editMsgId, text:
       '🔘 Шаг 3/4: Кнопки\n\n' +
       'Отправьте кнопки в формате:\n' +
       'Текст кнопки | https://ссылка\n\n' +
       'По одной кнопке на строку. До 5 кнопок.\n' +
       'Нажмите «Готово» чтобы пропустить.',
-      [
+      buttons: [
         [{ type: 'callback', text: '✅ Готово', data: `broadcast_buttons_done:${bid}` }],
         [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
       ]
-    )
+    })
   }
 
   if (cb.payload.startsWith('broadcast_buttons_done:')) {
@@ -788,14 +788,14 @@ async function handleCallbackQuery (update) {
     const b = await getBroadcast(bid)
     if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
     await updateBroadcast(bid, { _buttons_done: true })
-    return sendMessageWithKeyboard(chatId,
+    return renderScreen({ chatId, editMsgId, text:
       formatBroadcastPreview(b) + '\n\nОтправить сейчас?',
-      [
+      buttons: [
         [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${bid}` }],
         [{ type: 'callback', text: '🔍 Тест', data: `broadcast_test:${bid}` }],
         [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
       ]
-    )
+    })
   }
 
   if (cb.payload.startsWith('broadcast_test:')) {
@@ -806,10 +806,10 @@ async function handleCallbackQuery (update) {
     try {
       await sendBroadcastMessage(userId, b)
       alog('INFO', 'broadcast %s: test sent to admin userId=%d', bid, userId)
-      return sendMessageWithKeyboard(chatId,
+      return renderScreen({ chatId, editMsgId, text:
         '✅ Тестовая отправка выполнена!\n\n' + formatBroadcastPreview(b),
-        [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-      )
+        buttons: [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+      })
     } catch (err) {
       console.error(`[broadcast] ${bid}: test send error: ${err.message}`)
       return sendMessage(chatId, `❌ Ошибка тестовой отправки: ${err.message}`)
@@ -832,14 +832,12 @@ async function handleCallbackQuery (update) {
       msg = formatBroadcastPreview(b) + '\n\n📊 Статистика сброшена. Отправить сейчас?'
     }
 
-    return sendMessageWithKeyboard(chatId, msg,
-      [
-        [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${bid}` }],
-        [{ type: 'callback', text: '✏️ Редактировать', data: `broadcast_edit:${bid}` }],
-        [{ type: 'callback', text: '🔍 Тест', data: `broadcast_test:${bid}` }],
-        [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
-      ]
-    )
+    return renderScreen({ chatId, editMsgId, text: msg, buttons: [
+      [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${bid}` }],
+      [{ type: 'callback', text: '✏️ Редактировать', data: `broadcast_edit:${bid}` }],
+      [{ type: 'callback', text: '🔍 Тест', data: `broadcast_test:${bid}` }],
+      [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
+    ] })
   }
 
   if (cb.payload.startsWith('broadcast_confirm_now:')) {
@@ -967,15 +965,15 @@ async function handleCallbackQuery (update) {
   if (cb.payload === 'broadcast_list') {
     const broadcasts = await getAllBroadcasts()
     if (!broadcasts.length) {
-      return sendMessageWithKeyboard(chatId, '📭 Нет рассылок.', [
+      return renderScreen({ chatId, editMsgId, text: '📭 Нет рассылок.', buttons: [
         [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
-      ])
+      ] })
     }
     const buttons = broadcasts.slice(0, 10).map(b => [
       { type: 'callback', text: `${statusEmoji(b.status)} ${b.id}`, data: `broadcast_view:${b.id}` }
     ])
     buttons.push([{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }])
-    return sendMessageWithKeyboard(chatId, '📋 Рассылки:', buttons)
+    return renderScreen({ chatId, editMsgId, text: '📋 Рассылки:', buttons })
   }
 
   if (cb.payload.startsWith('broadcast_view:')) {
@@ -1015,7 +1013,7 @@ async function handleCallbackQuery (update) {
     btnRows.push([{ type: 'callback', text: '❌ Удалить', data: `broadcast_delete:${bid}` }])
     btnRows.push([{ type: 'callback', text: '🔙 К списку', data: 'broadcast_list' }])
 
-    return sendMessageWithKeyboard(chatId, detail, btnRows)
+    return renderScreen({ chatId, editMsgId, text: detail, buttons: btnRows })
   }
 
   if (cb.payload.startsWith('broadcast_stats:')) {
@@ -1036,49 +1034,49 @@ async function handleCallbackQuery (update) {
     msg += `👁 Открыто:       ${stats.opened} (${openPct}%)\n`
     msg += `🚫 Отписалось:    ${stats.unsubbed} (${unsubPct}%)\n`
 
-    return sendMessageWithKeyboard(chatId, msg, [
+    return renderScreen({ chatId, editMsgId, text: msg, buttons: [
       [{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]
-    ])
+    ] })
   }
 
   if (cb.payload.startsWith('broadcast_delete:')) {
     const bid = cb.payload.slice('broadcast_delete:'.length)
-    return sendMessageWithKeyboard(chatId,
+    return renderScreen({ chatId, editMsgId, text:
       `🗑 Удалить рассылку #${bid}?`,
-      [
+      buttons: [
         [
           { type: 'callback', text: '✅ Да', data: `broadcast_delete_confirm:${bid}` },
           { type: 'callback', text: '❌ Нет', data: `broadcast_view:${bid}` }
         ]
       ]
-    )
+    })
   }
 
   if (cb.payload.startsWith('broadcast_delete_confirm:')) {
     const bid = cb.payload.slice('broadcast_delete_confirm:'.length)
     await deleteBroadcast(bid)
     alog('DEBUG', 'broadcast_delete_confirm: deleted %s', bid)
-    return sendMessageWithKeyboard(chatId, `🗑 Рассылка #${bid} удалена.`, [
+    return renderScreen({ chatId, editMsgId, text: `🗑 Рассылка #${bid} удалена.`, buttons: [
       [{ type: 'callback', text: '🔙 К списку', data: 'broadcast_list' }]
-    ])
+    ] })
   }
 
   if (cb.payload.startsWith('broadcast_stop:')) {
     const bid = cb.payload.slice('broadcast_stop:'.length)
     await updateBroadcast(bid, { status: 'cancelled', scheduled_at: null })
     alog('DEBUG', 'broadcast_stop: stopped %s', bid)
-    return sendMessageWithKeyboard(chatId, `⏸ Рассылка #${bid} остановлена.`, [
+    return renderScreen({ chatId, editMsgId, text: `⏸ Рассылка #${bid} остановлена.`, buttons: [
       [{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]
-    ])
+    ] })
   }
 
   if (cb.payload.startsWith('broadcast_resume:')) {
     const bid = cb.payload.slice('broadcast_resume:'.length)
     await updateBroadcast(bid, { status: 'scheduled', scheduled_at: Date.now() })
     alog('DEBUG', 'broadcast_resume: resumed %s', bid)
-    return sendMessageWithKeyboard(chatId, `▶️ Рассылка #${bid} возобновлена.`, [
+    return renderScreen({ chatId, editMsgId, text: `▶️ Рассылка #${bid} возобновлена.`, buttons: [
       [{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]
-    ])
+    ] })
   }
 
   if (cb.payload.startsWith('broadcast_edit:')) {
@@ -1089,31 +1087,31 @@ async function handleCallbackQuery (update) {
       return sendMessage(chatId, '⚠️ Редактировать можно только черновики.')
     }
     await updateBroadcast(bid, { text: '', _images_done: false, _buttons_done: false, images: [], buttons: [] })
-    return sendMessageWithKeyboard(chatId,
+    return renderScreen({ chatId, editMsgId, text:
       '📝 Редактирование (шаг 1/4)\n\n' +
       'Введите новый текст сообщения:\n\n' +
       `ID: ${bid}`,
-      [[{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]]
-    )
+      buttons: [[{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]]
+    })
   }
 
   if (cb.payload === 'broadcast_clear_stale') {
     const all = await getAllUsers()
     const stale = all.filter(u => u.inactive)
     if (!stale.length) {
-      return sendMessageWithKeyboard(chatId, '✅ Нет неактивных пользователей для очистки.', [
+      return renderScreen({ chatId, editMsgId, text: '✅ Нет неактивных пользователей для очистки.', buttons: [
         [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
-      ])
+      ] })
     }
     const count = stale.length
     for (const u of stale) {
       await removeUser(u.user_id).catch(() => {})
     }
     alog('INFO', 'broadcast_clear_stale: removed %d inactive users', count)
-    return sendMessageWithKeyboard(chatId,
+    return renderScreen({ chatId, editMsgId, text:
       `🧹 Удалено ${count} неактивных пользователей из базы.`,
-      [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-    )
+      buttons: [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+    })
   }
 
   if (cb.payload === 'back') {
@@ -1121,7 +1119,7 @@ async function handleCallbackQuery (update) {
     if (!isAdmin(userId)) {
       return sendMessage(chatId, 'Используйте /links для просмотра ваших связок.')
     }
-    return showAdminMenu(chatId, userId)
+    return showAdminMenu(chatId, userId, editMsgId)
   }
 
   if (cb.payload.startsWith('del:')) {
@@ -1133,16 +1131,15 @@ async function handleCallbackQuery (update) {
     }
     if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
     alog('DEBUG', ' del: confirmation requested for key=%s, userId=%d', key, userId)
-    return sendMessageWithKeyboard(
-      chatId,
+    return renderScreen({ chatId, editMsgId, text:
       `🗑 Удалить связку "${key}"?\n\n🔗 ${existing.url}\n\n💬 ${existing.message}`,
-      [
+      buttons: [
         [
           { type: 'callback', text: '✅ Да, удалить', data: `confirm_del:${key}` },
           { type: 'callback', text: '❌ Нет', data: 'links' }
         ]
       ]
-    )
+    })
   }
 
   if (cb.payload.startsWith('confirm_del:')) {
@@ -1155,9 +1152,9 @@ async function handleCallbackQuery (update) {
     if (!existing) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
     alog('DEBUG', ' confirm_del: deleted key=%s by userId=%d', key, userId)
     await delLink(key)
-    return sendMessageWithKeyboard(chatId, `✅ Связка "${key}" удалена.`, [
+    return renderScreen({ chatId, editMsgId, text: `✅ Связка "${key}" удалена.`, buttons: [
       [{ type: 'callback', text: '🔙 К списку', data: 'links' }]
-    ])
+    ] })
   }
 
   console.warn('[API] handleCallbackQuery: неизвестный payload', cb.payload)

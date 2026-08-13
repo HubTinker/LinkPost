@@ -1147,3 +1147,60 @@ describe('broadcast_confirm_now flow', () => {
     assert.strictEqual(stats.sent, 1, 'second user should be marked sent')
   })
 })
+
+describe('single-screen navigation', () => {
+  beforeEach(() => {
+    fetchCalls = []
+    kv._clear()
+  })
+
+  it('should edit the callback source message in place', async () => {
+    await kv.set('link:a', { url: 'https://a.com', message: 'A' })
+    await kv.sadd('links_all', 'a')
+    await handleCallbackQuery({
+      callback: { payload: 'links', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, message_id: 90 }
+    })
+    const edits = fetchCalls.filter(c => c.url?.includes('message_id=90') && c.method === 'PUT')
+    assert.equal(edits.length, 1, 'source message should be edited once')
+    assert.ok(edits[0].body.text.includes('📋 Связки'), 'should render links list')
+    const sends = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id'))
+    assert.equal(sends.length, 0, 'no new message should be sent')
+  })
+
+  it('should fall back to nav_msg when message_id is missing', async () => {
+    const { setNavMessageId } = await import('../lib/nav.js')
+    await setNavMessageId(1, 77)
+    await kv.set('link:a', { url: 'https://a.com', message: 'A' })
+    await kv.sadd('links_all', 'a')
+    await handleCallbackQuery({
+      callback: { payload: 'links', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const edits = fetchCalls.filter(c => c.url?.includes('message_id=77') && c.method === 'PUT')
+    assert.equal(edits.length, 1, 'nav message should be edited')
+  })
+
+  it('should send new message when both ids are missing', async () => {
+    await kv.set('link:a', { url: 'https://a.com', message: 'A' })
+    await kv.sadd('links_all', 'a')
+    await handleCallbackQuery({
+      callback: { payload: 'links', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 } }
+    })
+    const sends = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id'))
+    assert.equal(sends.length, 1, 'should send new message')
+  })
+
+  it('should keep content sends as new messages (link_preview)', async () => {
+    await kv.set('link:vip', { url: 'https://channel.com', message: 'Welcome!' })
+    await handleCallbackQuery({
+      callback: { payload: 'link_preview:vip', user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, message_id: 90 }
+    })
+    // Preview — контент: новое сообщение, edit не используется
+    const sends = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id'))
+    assert.equal(sends.length, 1, 'preview should be a new message')
+    assert.equal(fetchCalls.filter(c => c.url?.includes('message_id')).length, 0, 'no edit expected')
+  })
+})
