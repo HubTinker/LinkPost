@@ -5,7 +5,8 @@ import {
   createBroadcast, getBroadcast, updateBroadcast, deleteBroadcast,
   getAllBroadcasts, getScheduledBroadcasts,
   markSent, isSent, markDelivered, markOpened, markUnsubbed, markFailed,
-  getCursor, setCursor, getBroadcastStats, resetBroadcastStats
+  getCursor, setCursor, getBroadcastStats, resetBroadcastStats,
+  setStatusMessageId, getStatusMessageId
 } from '../lib/broadcast.js'
 
 import { kv } from '../lib/kv-mock.js'
@@ -238,5 +239,38 @@ describe('Scheduled broadcasts', () => {
     const scheduled = await getScheduledBroadcasts()
     assert.strictEqual(scheduled.length, 1)
     assert.strictEqual(scheduled[0].text, 'Past')
+  })
+})
+
+describe('status message id', () => {
+  beforeEach(async () => {
+    await kv._clear()
+  })
+
+  it('should roundtrip status message id', async () => {
+    const b = await createBroadcast({ text: 'X', created_by: 123 })
+    assert.strictEqual(await getStatusMessageId(b.id), null)
+    await setStatusMessageId(b.id, 90)
+    assert.strictEqual(await getStatusMessageId(b.id), 90)
+  })
+
+  it('should store under broadcast:{id}:status_msg prefix', async () => {
+    const b = await createBroadcast({ text: 'X', created_by: 123 })
+    await setStatusMessageId(b.id, 90)
+    assert.strictEqual(await kv.get(`broadcast:${b.id}:status_msg`), 90)
+  })
+
+  it('should delete status message id with broadcast', async () => {
+    const b = await createBroadcast({ text: 'X', created_by: 123 })
+    await setStatusMessageId(b.id, 90)
+    await deleteBroadcast(b.id)
+    assert.strictEqual(await kv.get(`broadcast:${b.id}:status_msg`), null)
+  })
+
+  it('should clear status message id on stats reset', async () => {
+    const b = await createBroadcast({ text: 'X', created_by: 123 })
+    await setStatusMessageId(b.id, 90)
+    await resetBroadcastStats(b.id)
+    assert.strictEqual(await kv.get(`broadcast:${b.id}:status_msg`), null)
   })
 })
