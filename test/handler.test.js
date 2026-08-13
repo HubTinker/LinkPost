@@ -8,7 +8,7 @@ process.env.BOT_NICK = 'TestBot'
 let fetchCalls
 global.fetch = async (url, opts) => {
   if (!fetchCalls) fetchCalls = []
-  fetchCalls.push({ url, body: JSON.parse(opts?.body || '{}') })
+  fetchCalls.push({ url, method: opts?.method || 'GET', body: JSON.parse(opts?.body || '{}') })
   return {
     ok: true,
     json: async () => ({ ok: true }),

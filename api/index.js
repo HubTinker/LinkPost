@@ -8,7 +8,8 @@
 
 import { Hono } from 'hono'
 import { handle } from 'hono/vercel'
-import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead, sendBroadcastMessage, editMessage } from '../lib/max-api.js'
+import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead, sendBroadcastMessage, editMessage, editMessageWithKeyboard, deleteMessage } from '../lib/max-api.js'
+import { setNavMessageId, getNavMessageId } from '../lib/nav.js'
 import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
   saveUser, getUserCount, getAllUsers, reactivateUser, markInactive, removeUser,
@@ -178,6 +179,58 @@ async function showAdminMenu (chatId, userId) {
       [{ type: 'callback', text: '📨 Рассылка', data: 'broadcast_menu' }]
     ]
   )
+}
+
+/** Best-effort запись nav_msg: сбой KV не должен ломать UI (правка плана №1) */
+async function saveNavMessageIdSafely (chatId, messageId) {
+  try {
+    await setNavMessageId(chatId, messageId)
+  } catch (e) {
+    alog('WARN', 'renderScreen: failed to save nav message id: %s', e.message)
+  }
+}
+
+/**
+ * Единая точка рендера навигационных экранов: правка на месте, фолбэк delete+send.
+ * НЕ бросает наружу при ошибках API/KV (кроме guard непустых buttons).
+ */
+async function renderScreen ({ chatId, editMsgId, text, buttons }) {
+  if (!buttons?.length) throw new Error('renderScreen: buttons required')
+  // target выбирается один раз: сообщение-источник, либо nav_msg (только если source отсутствует)
+  let targetId = editMsgId
+  if (targetId == null) {
+    try {
+      targetId = await getNavMessageId(chatId)
+    } catch (e) {
+      alog('WARN', 'renderScreen: getNavMessageId failed: %s', e.message)
+    }
+  }
+  if (targetId != null) {
+    try {
+      // Критическая операция UI — edit. KV-запись ниже best-effort и не попадает в этот try.
+      await editMessageWithKeyboard(chatId, targetId, text, buttons)
+      await saveNavMessageIdSafely(chatId, targetId)
+      return { message_id: targetId }
+    } catch (e) {
+      // Сюда попадаем ТОЛЬКО при неудачном edit (KV-сбой сюда не приводит)
+      alog('WARN', 'renderScreen: edit failed for %s: %s', targetId, e.message)
+      // Жёсткий инвариант: после ошибки edit конкретного target nav_msg не используется.
+      // Удаляем ровно тот target, который пытались редактировать.
+      try {
+        await deleteMessage(chatId, targetId)
+      } catch (de) {
+        alog('WARN', 'renderScreen: delete failed for %s: %s', targetId, de.message)
+      }
+    }
+  }
+  try {
+    const resp = await sendMessageWithKeyboard(chatId, text, buttons)
+    if (resp?.message_id) await saveNavMessageIdSafely(chatId, resp.message_id)
+    return resp
+  } catch (e) {
+    alog('WARN', 'renderScreen: send failed: %s', e.message)
+    return null
+  }
 }
 
 // ── Обработчики событий ───────────────────────────────────────────────────────
@@ -1499,6 +1552,6 @@ export default async function nodeHandler (req, res) {
   res.end(Buffer.from(body))
 }
 
-export { app, handleBotStarted, handleMessage, handleCallbackQuery }
+export { app, handleBotStarted, handleMessage, handleCallbackQuery, renderScreen }
 
 
