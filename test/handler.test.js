@@ -19,7 +19,7 @@ global.fetch = async (url, opts) => {
 
 const { kv } = await import('../lib/kv-mock.js')
 const {
-  createBroadcast, getBroadcast, getBroadcastStats, getCursor,
+  createBroadcast, getBroadcast, getBroadcastStats, getCursor, updateBroadcast,
   markSent, markFailed, setCursor, resetBroadcastStats
 } = await import('../lib/broadcast.js')
 const { handleMessage, handleBotStarted } = await import('../api/index.js')
@@ -1202,5 +1202,107 @@ describe('single-screen navigation', () => {
     const sends = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id'))
     assert.equal(sends.length, 1, 'preview should be a new message')
     assert.equal(fetchCalls.filter(c => c.url?.includes('message_id')).length, 0, 'no edit expected')
+  })
+})
+
+describe('broadcast status screen', () => {
+  beforeEach(() => {
+    fetchCalls = []
+    kv._clear()
+  })
+
+  // batchSize в broadcast_confirm_now (api/index.js) = 20 — предположение теста должно быть явным
+  const BATCH_SIZE = 20
+
+  async function seedUsers (n) {
+    for (let i = 1; i <= n; i++) {
+      await kv.sadd('users_all', String(i))
+      await kv.set(`user:${i}`, { user_id: i, name: `U${i}` })
+    }
+  }
+
+  it('should save status_message_id when first batch does not complete', async () => {
+    // BATCH_SIZE + 1 пользователь: первый батч = BATCH_SIZE, рассылка продолжается
+    await seedUsers(BATCH_SIZE + 1)
+    const b = await createBroadcast({ text: 'Launch', created_by: 123 })
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, message_id: 90 }
+    })
+    // Экран «запущена» отредактирован на месте (message_id=90)
+    const launched = fetchCalls.find(c => c.url?.includes('message_id=90') && c.method === 'PUT')
+    assert.ok(launched, 'launched screen should be edited in place')
+    assert.ok(launched.body.text.includes('запущена'), 'launched screen text expected')
+    // status_message_id = id отредактированного экрана, сохранён до запуска цепочки
+    assert.strictEqual(await kv.get(`broadcast:${b.id}:status_msg`), 90)
+    // summary не должен уходить (рассылка не завершена);
+    // прогресс-сообщение (содержит «Прогресс:») — не summary, исключаем из подсчёта
+    assert.equal(fetchCalls.filter(c => c.body?.text?.includes('Отправлено:') && !c.body?.text?.includes('Прогресс:')).length, 0)
+  })
+
+  it('should not save status_message_id when first batch completes', async () => {
+    // BATCH_SIZE - 1 пользователь < BATCH_SIZE → первый батч завершает рассылку полностью
+    await seedUsers(BATCH_SIZE - 1)
+    const b = await createBroadcast({ text: 'Short', created_by: 123 })
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, message_id: 90 }
+    })
+    assert.strictEqual(await kv.get(`broadcast:${b.id}:status_msg`), null, 'no status id on immediate completion')
+    const done = fetchCalls.find(c => c.url?.includes('message_id=90') && c.method === 'PUT')
+    assert.ok(done, 'completion screen should be edited in place')
+    assert.ok(done.body.text.includes('завершена'), 'completion text expected')
+    // summary — отдельное новое сообщение (прогресс-сообщения исключаем: они содержат «Прогресс:»)
+    const summaries = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id') && c.body?.text?.includes('Отправлено:') && !c.body?.text?.includes('Прогресс:'))
+    assert.equal(summaries.length, 1, 'summary should be one new message')
+    // отдельного короткого «завершена»-сообщения больше нет
+    const extraDone = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id') && c.body?.text?.includes('сообщений'))
+    assert.equal(extraDone.length, 0, 'no separate completion keyboard message')
+  })
+
+  it('should edit the stored status message on chain completion', async () => {
+    process.env.SETUP_SECRET = 'test-secret'
+    try {
+      // 2 < BATCH_SIZE → первый батч завершает рассылку
+      await seedUsers(2)
+      const b = await createBroadcast({ text: 'Chain', created_by: 123 })
+      await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now(), created_by_chat_id: 1 })
+      const { setStatusMessageId } = await import('../lib/broadcast.js')
+      await setStatusMessageId(b.id, 90)
+
+      const { app } = await import('../api/index.js')
+      const res = await app.request('/process-broadcasts?secret=test-secret')
+
+      assert.equal(res.status, 200)
+      const statusEdit = fetchCalls.find(c => c.url?.includes('message_id=90') && c.method === 'PUT')
+      assert.ok(statusEdit, 'status screen should be edited on completion')
+      assert.ok(statusEdit.body.text.includes('завершена'), 'completion text expected')
+      const summary = fetchCalls.find(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id') && c.body?.text?.includes('Отправлено:'))
+      assert.ok(summary, 'summary should be sent as new message')
+    } finally {
+      delete process.env.SETUP_SECRET
+    }
+  })
+
+  it('should not use nav_msg for broadcast completion', async () => {
+    process.env.SETUP_SECRET = 'test-secret'
+    try {
+      const { setNavMessageId } = await import('../lib/nav.js')
+      await setNavMessageId(1, 999)
+      // 2 < BATCH_SIZE → первый батч завершает рассылку
+      await seedUsers(2)
+      const b = await createBroadcast({ text: 'NoNav', created_by: 123 })
+      await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now(), created_by_chat_id: 1 })
+
+      const { app } = await import('../api/index.js')
+      await app.request('/process-broadcasts?secret=test-secret')
+
+      const navEdits = fetchCalls.filter(c => c.url?.includes('message_id=999') && c.method === 'PUT')
+      assert.equal(navEdits.length, 0, 'nav_msg must not be used for completion')
+      const summary = fetchCalls.find(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id') && c.body?.text?.includes('Отправлено:'))
+      assert.ok(summary, 'summary still sent')
+    } finally {
+      delete process.env.SETUP_SECRET
+    }
   })
 })

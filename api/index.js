@@ -22,7 +22,8 @@ import {
   getAllBroadcasts, getScheduledBroadcasts,
   markSent, markDelivered, markOpened, markUnsubbed, markFailed,
   getBroadcastStats, getCursor, setCursor, isSent, resetBroadcastStats,
-  setProgressMessageId, getProgressMessageId
+  setProgressMessageId, getProgressMessageId,
+  setStatusMessageId, getStatusMessageId
 } from '../lib/broadcast.js'
 
 const app = new Hono()
@@ -938,13 +939,28 @@ async function handleCallbackQuery (update) {
         `❌ Ошибок: ${finalStats.failed}`
       await sendMessage(chatId, summaryMsg).catch(e => console.warn('[broadcast] failed to send summary to creator:', e.message))
       alog('INFO', 'broadcast %s: sent summary, stats=%j', bid, finalStats)
-      return sendMessageWithKeyboard(chatId,
-        `✅ Рассылка #${bid} завершена! Отправлено ${cursor} сообщений.`,
-        [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-      )
+      // Мгновенное завершение: status_message_id НЕ создаётся, экран подтверждения
+      // сразу редактируется в финальный (спека §6.1)
+      return renderScreen({
+        chatId,
+        editMsgId,
+        text: `✅ Рассылка #${bid} завершена! Отправлено ${cursor} сообщений.`,
+        buttons: [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+      })
     }
 
-    // Continue with next batch (parallel — both the admin message and the chain call happen at once)
+    // Экран «запущена» — правка на месте; статусный id сохраняется ДО запуска цепочки (спека §6.1)
+    const launched = await renderScreen({
+      chatId,
+      editMsgId,
+      text: `📤 Рассылка #${bid} запущена! Отправлено ${sent} из ${users.length}. Продолжаю...` +
+        `\nℹ️ Прогресс будет приходить каждые ${PROGRESS_INTERVAL} сообщений.`,
+      buttons: [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+    })
+    if (launched?.message_id) {
+      await setStatusMessageId(bid, launched.message_id)
+    }
+
     const secret = process.env.SETUP_SECRET
     const chainPromise = secret
       ? fetch(`${APP_BASE_URL}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
@@ -952,14 +968,7 @@ async function handleCallbackQuery (update) {
           .catch(e => console.warn('[broadcast] chain call failed:', e.message))
       : Promise.resolve()
 
-    await Promise.all([
-      sendMessageWithKeyboard(chatId,
-        `📤 Рассылка #${bid} запущена! Отправлено ${sent} из ${users.length}. Продолжаю...` +
-        `\nℹ️ Прогресс будет приходить каждые ${PROGRESS_INTERVAL} сообщений.`,
-        [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-      ),
-      chainPromise
-    ])
+    await chainPromise
   }
 
   if (cb.payload === 'broadcast_list') {
@@ -1337,6 +1346,13 @@ app.get('/process-broadcasts', async (c) => {
         if (summaryChatId) {
           await sendMessage(summaryChatId, chainSummary).catch(e => console.warn('[broadcast] failed to send chain summary to creator:', e.message))
         }
+        const statusMsgId = await getStatusMessageId(b.id)
+        if (statusMsgId && summaryChatId) {
+          editMessageWithKeyboard(summaryChatId, statusMsgId,
+            `✅ Рассылка #${b.id} завершена! Отправлено ${users.length} сообщений.`,
+            [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+          ).catch(e => alog('WARN', 'broadcast %s: status screen edit failed: %s', b.id, e.message))
+        }
         alog('INFO', 'broadcast %s: completed, stats=%j', b.id, chainStats)
       } else {
         console.log(`[broadcast] ${b.id}: progress ${newCursor}/${users.length}`)
@@ -1482,6 +1498,13 @@ app.get('/cron-process-broadcasts', async (c) => {
         const summaryChatId = b.created_by_chat_id
         if (summaryChatId) {
           await sendMessage(summaryChatId, summary).catch(e => console.warn('[broadcast] cron summary send failed:', e.message))
+        }
+        const statusMsgId = await getStatusMessageId(b.id)
+        if (statusMsgId && summaryChatId) {
+          editMessageWithKeyboard(summaryChatId, statusMsgId,
+            `✅ Рассылка #${b.id} завершена! Отправлено ${users.length} сообщений.`,
+            [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+          ).catch(e => alog('WARN', 'broadcast %s: cron status screen edit failed: %s', b.id, e.message))
         }
       } else {
         console.log(`[broadcast] ${b.id}: cron progress ${newCursor}/${users.length}`)
