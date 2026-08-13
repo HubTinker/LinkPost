@@ -27,6 +27,7 @@ FILES=(
   lib/broadcast.js
   lib/kv-mock.js
   lib/max-api.js
+  lib/nav.js
   lib/storage.js
   package-lock.json
   package.json
