@@ -95,7 +95,7 @@ const DENY = (chatId) =>
   sendMessage(chatId, '⛔ Эта команда доступна только администратору.')
 
 /** Показать список связок с пагинацией (админ — все, создатель — свои) */
-async function showLinksList (chatId, userId, page = 1, editMsgId = null) {
+async function showLinksList (chatId, userId, page = 1, editMsgId = null, useNavFallback = true) {
   const isAdminUser = isAdmin(userId)
   const all = isAdminUser ? await getAllLinks() : await getLinksByCreator(userId)
 
@@ -104,7 +104,7 @@ async function showLinksList (chatId, userId, page = 1, editMsgId = null) {
       ? '📭 Нет активных связок. Добавьте первую через /setlink.'
       : '📭 У вас пока нет связок.'
     if (isAdminUser) {
-      return renderScreen({ chatId, editMsgId, text, buttons: [
+      return renderScreen({ chatId, editMsgId, useNavFallback, text, buttons: [
         [{ type: 'callback', text: '🔙 Назад', data: 'back' }]
       ] })
     }
@@ -132,13 +132,13 @@ async function showLinksList (chatId, userId, page = 1, editMsgId = null) {
   if (!rows.length) return sendMessage(chatId, out)
 
   alog('DEBUG', ' showLinksList: userId=%d, page=%d, total=%d, totalPages=%d', userId, safePage, sorted.length, totalPages)
-  return renderScreen({ chatId, editMsgId, text: out, buttons: rows })
+  return renderScreen({ chatId, editMsgId, useNavFallback, text: out, buttons: rows })
 }
 
 const MAX_LINK_MESSAGE_DISPLAY = 3000
 
 /** Показать карточку связки: текст, ссылка, диплинк + кнопки */
-async function showLinkCard (chatId, userId, key, editMsgId = null) {
+async function showLinkCard (chatId, userId, key, editMsgId = null, useNavFallback = true) {
   const link = await getLink(key)
   if (!isAdmin(userId) && (!link || !canManage(userId, link))) {
     return sendMessage(chatId, `⛔ Ключ "${key}" не найден или у вас нет прав.`)
@@ -155,7 +155,7 @@ async function showLinkCard (chatId, userId, key, editMsgId = null) {
     `🔗 Ссылка: ${link.url}\n\n` +
     `🔗 Диплинк: https://max.ru/${BOT_NICK}?start=${key}`
 
-  return renderScreen({ chatId, editMsgId, text, buttons: [
+  return renderScreen({ chatId, editMsgId, useNavFallback, text, buttons: [
     [
       { type: 'callback', text: '🗑 Удалить', data: `del:${key}` },
       { type: 'callback', text: '👁 Посмотреть', data: `link_preview:${key}` }
@@ -165,11 +165,11 @@ async function showLinkCard (chatId, userId, key, editMsgId = null) {
 }
 
 /** Показать админское главное меню */
-async function showAdminMenu (chatId, userId, editMsgId = null) {
+async function showAdminMenu (chatId, userId, editMsgId = null, useNavFallback = true) {
   if (!isAdmin(userId)) return
   const count = await getUserCount()
   alog('DEBUG', ' showAdminMenu: показано меню для чата', chatId)
-  await renderScreen({ chatId, editMsgId, text:
+  await renderScreen({ chatId, editMsgId, useNavFallback, text:
     `👋 Привет, Админ! В базе ${count} пользователей.`,
     buttons: [
       [{ type: 'callback', text: '📋 Связки', data: 'links' },
@@ -194,11 +194,12 @@ async function saveNavMessageIdSafely (chatId, messageId) {
  * Единая точка рендера навигационных экранов: правка на месте, фолбэк delete+send.
  * НЕ бросает наружу при ошибках API/KV (кроме guard непустых buttons).
  */
-async function renderScreen ({ chatId, editMsgId, text, buttons }) {
+async function renderScreen ({ chatId, editMsgId, text, buttons, useNavFallback = true }) {
   if (!buttons?.length) throw new Error('renderScreen: buttons required')
-  // target выбирается один раз: сообщение-источник, либо nav_msg (только если source отсутствует)
+  // target выбирается один раз: сообщение-источник, либо nav_msg (только если source
+  // отсутствует и разрешён фолбэк; команды идут с useNavFallback: false — всегда новое сообщение)
   let targetId = editMsgId
-  if (targetId == null) {
+  if (targetId == null && useNavFallback) {
     try {
       targetId = await getNavMessageId(chatId)
     } catch (e) {
@@ -206,11 +207,12 @@ async function renderScreen ({ chatId, editMsgId, text, buttons }) {
     }
   }
   if (targetId != null) {
+    // Критическая операция UI — edit. KV-запись выполняется ТОЛЬКО после успешного
+    // edit и вне этого try, поэтому сбой KV не ломает успешную правку.
+    let edited = false
     try {
-      // Критическая операция UI — edit. KV-запись ниже best-effort и не попадает в этот try.
       await editMessageWithKeyboard(chatId, targetId, text, buttons)
-      await saveNavMessageIdSafely(chatId, targetId)
-      return { message_id: targetId }
+      edited = true
     } catch (e) {
       // Сюда попадаем ТОЛЬКО при неудачном edit (KV-сбой сюда не приводит)
       alog('WARN', 'renderScreen: edit failed for %s: %s', targetId, e.message)
@@ -221,6 +223,10 @@ async function renderScreen ({ chatId, editMsgId, text, buttons }) {
       } catch (de) {
         alog('WARN', 'renderScreen: delete failed for %s: %s', targetId, de.message)
       }
+    }
+    if (edited) {
+      await saveNavMessageIdSafely(chatId, targetId)
+      return { message_id: targetId }
     }
   }
   try {
@@ -279,7 +285,7 @@ async function handleBotStarted (update) {
 
   // Обычный /start без payload
   if (isAdmin(user?.user_id)) {
-    await showAdminMenu(chat_id, user?.user_id)
+    await showAdminMenu(chat_id, user?.user_id, null, false)
   } else {
     await sendMessage(chat_id, '👋 Привет! Введи ключ, который тебе выдали, и я пришлю ссылку на канал.')
   }
@@ -400,7 +406,7 @@ async function handleMessage (update) {
   if (text === '/links' || text.startsWith('/links ')) {
     const [pageArg] = parseArgs(text)
     const page = pageArg ? Math.max(1, parseInt(pageArg, 10) || 1) : 1
-    return showLinksList(chat_id, userId, page, null)
+    return showLinksList(chat_id, userId, page, null, false)
   }
 
   if (text === '/link' || text.startsWith('/link ')) {
@@ -408,7 +414,7 @@ async function handleMessage (update) {
     if (!key) {
       return sendMessage(chat_id, '⚠️ Формат: /link <ключ>\n\nПример:\n/link vip')
     }
-    return showLinkCard(chat_id, userId, key, null)
+    return showLinkCard(chat_id, userId, key, null, false)
   }
 
   if (text.startsWith('/users')) {
@@ -958,7 +964,11 @@ async function handleCallbackQuery (update) {
       buttons: [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
     })
     if (launched?.message_id) {
-      await setStatusMessageId(bid, launched.message_id)
+      try {
+        await setStatusMessageId(bid, launched.message_id)
+      } catch (e) {
+        alog('WARN', 'broadcast %s: failed to save status message id: %s', bid, e.message)
+      }
     }
 
     const secret = process.env.SETUP_SECRET

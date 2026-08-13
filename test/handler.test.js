@@ -1203,6 +1203,40 @@ describe('single-screen navigation', () => {
     assert.equal(sends.length, 1, 'preview should be a new message')
     assert.equal(fetchCalls.filter(c => c.url?.includes('message_id')).length, 0, 'no edit expected')
   })
+
+  it('should send new message for /links command even when nav_msg exists', async () => {
+    const { setNavMessageId } = await import('../lib/nav.js')
+    await setNavMessageId(1, 77)
+    await kv.set('link:a', { url: 'https://a.com', message: 'A' })
+    await kv.sadd('links_all', 'a')
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/links' } },
+      user: { user_id: 123 }
+    })
+    const sends = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id'))
+    assert.equal(sends.length, 1, 'command should send a new message')
+    assert.ok(sends[0].body.text.includes('📋 Связки'), 'should render links list')
+    assert.equal(
+      fetchCalls.filter(c => c.url?.includes('message_id=77')).length,
+      0,
+      'nav message must not be edited'
+    )
+  })
+
+  it('should send new admin menu for /start even when nav_msg exists', async () => {
+    const { setNavMessageId } = await import('../lib/nav.js')
+    await setNavMessageId(1, 77)
+    await handleBotStarted({ chat_id: 1, user: { user_id: 123 }, payload: null })
+    const sends = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id'))
+    assert.equal(sends.length, 1, '/start should send a new admin menu message')
+    assert.ok(sends[0].body.text.includes('Привет, Админ'), 'should render admin menu')
+    assert.equal(
+      fetchCalls.filter(c => c.url?.includes('message_id=77')).length,
+      0,
+      'nav message must not be edited'
+    )
+  })
 })
 
 describe('broadcast status screen', () => {

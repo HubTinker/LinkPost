@@ -71,6 +71,17 @@ describe('renderScreen', () => {
     assert.strictEqual(await kv.get('nav_msg:1'), 999)
   })
 
+  it('should send new message when useNavFallback is false even if nav id exists', async () => {
+    await setNavMessageId(1, 77)
+    await renderScreen({ chatId: 1, editMsgId: null, text: 'hello', buttons: BUTTONS, useNavFallback: false })
+    const send = byUrl('chat_id=1').find(c => !c.url.includes('message_id'))
+    assert.ok(send, 'send expected')
+    assert.equal(send.method, 'POST')
+    assert.equal(send.body.text, 'hello')
+    assert.equal(byUrl('message_id=77').length, 0, 'nav message must not be edited')
+    assert.strictEqual(await kv.get('nav_msg:1'), 999, 'new message id stored as nav')
+  })
+
   it('should NOT use nav message after source edit failure (hard invariant)', async () => {
     await setNavMessageId(1, 77)
     global.fetchFailUrls = ['message_id=90']
