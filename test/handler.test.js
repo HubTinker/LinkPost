@@ -102,6 +102,14 @@ describe('handleMessage commands', () => {
     assert.ok(typeof saved.created_at === 'number')
     const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('✅'))
     assert.ok(responseCall, 'success response not found')
+    assert.equal(responseCall.body.attachments[0].type, 'inline_keyboard', 'should have keyboard')
+    const keyboard = responseCall.body.attachments[0].payload.buttons
+    assert.equal(keyboard.length, 2, 'should have two rows')
+    assert.deepEqual(keyboard[0].map(b => b.payload), ['links', 'create'], 'actions row should be links/create')
+    assert.deepEqual(keyboard[1].map(b => b.payload), ['back'], 'back row should be back')
+    assert.equal(keyboard[0][0].text, '📋 Связки')
+    assert.equal(keyboard[0][1].text, '➕ Создать ещё')
+    assert.equal(keyboard[1][0].text, '🔙 Назад')
   })
 
   it('/setlink should be silently ignored for non-admin', async () => {

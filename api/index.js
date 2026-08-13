@@ -94,6 +94,14 @@ function formatBroadcastDetail (b) {
 const DENY = (chatId) =>
   sendMessage(chatId, '⛔ Эта команда доступна только администратору.')
 
+/** Терминальное сообщение команды: ряд действий + строка «Назад» */
+async function sendCommandResult (chatId, text, actions = [], backData = 'back') {
+  const rows = []
+  if (actions.length) rows.push(actions.map(a => ({ type: 'callback', ...a })))
+  rows.push([{ type: 'callback', text: '🔙 Назад', data: backData }])
+  return sendMessageWithKeyboard(chatId, text, rows)
+}
+
 /** Показать список связок с пагинацией (админ — все, создатель — свои) */
 async function showLinksList (chatId, userId, page = 1, editMsgId = null, useNavFallback = true) {
   const isAdminUser = isAdmin(userId)
@@ -372,13 +380,17 @@ async function handleMessage (update) {
     alog('DEBUG', ' /setlink: key=%s, url=%s, creator=%d', key, url, userId)
     await setLink(key, url, msg, userId)
     alog('DEBUG', ' /setlink: saved successfully')
-    return sendMessage(
+    return sendCommandResult(
       chat_id,
       '✅ Связка сохранена!\n\n' +
       `🔑 Ключ: ${key}\n` +
       `🔗 Ссылка: ${url}\n` +
       `💬 Сообщение: ${msg}\n\n` +
-      `Диплинк:\nhttps://max.ru/${BOT_NICK}?start=${key}`
+      `Диплинк:\nhttps://max.ru/${BOT_NICK}?start=${key}`,
+      [
+        { text: '📋 Связки', data: 'links' },
+        { text: '➕ Создать ещё', data: 'create' }
+      ]
     )
   }
 
