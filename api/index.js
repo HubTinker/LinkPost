@@ -492,7 +492,12 @@ async function handleMessage (update) {
           if (fileId) {
             const images = (draft.images || []).concat([fileId])
             await updateBroadcast(draft.id, { images })
-            return sendMessage(chat_id, `📷 Изображение добавлено (${images.length}). Отправьте ещё или нажмите «Готово».`)
+            return sendCommandResult(
+              chat_id,
+              `📷 Изображение добавлено (${images.length}). Отправьте ещё или нажмите «Готово».`,
+              [{ text: '✅ Готово', data: `broadcast_images_done:${draft.id}` }],
+              'broadcast_menu'
+            )
           }
         }
         // If text but no image, ignore

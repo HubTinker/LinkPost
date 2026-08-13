@@ -1377,3 +1377,30 @@ describe('broadcast status screen', () => {
     }
   })
 })
+
+describe('broadcast draft flow', () => {
+  beforeEach(() => {
+    fetchCalls = []
+    kv._clear()
+  })
+
+  it('should send nav buttons on image added message', async () => {
+    const draft = await createBroadcast({ text: 'Hello', created_by: 123 })
+    await handleMessage({
+      chat_id: 1,
+      message: {
+        body: { text: 'ignore' },
+        attachments: [{ type: 'image', payload: { file_id: 'FILE1' } }]
+      },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('Изображение добавлено'))
+    assert.ok(responseCall, 'image added message not found')
+    assert.equal(responseCall.body.attachments[0].type, 'inline_keyboard', 'should have keyboard')
+    const keyboard = responseCall.body.attachments[0].payload.buttons
+    assert.deepEqual(keyboard[0].map(b => b.payload), [`broadcast_images_done:${draft.id}`], 'actions row should be done button')
+    assert.equal(keyboard[0][0].text, '✅ Готово')
+    assert.deepEqual(keyboard[1].map(b => b.payload), ['broadcast_menu'], 'back row should be broadcast_menu')
+    assert.equal(keyboard[1][0].text, '🔙 Назад')
+  })
+})
