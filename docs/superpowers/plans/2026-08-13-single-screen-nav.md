@@ -681,7 +681,7 @@ git commit -m "feat: add renderScreen with edit-in-place fallback"
 
 **Interfaces:**
 - Consumes: `renderScreen` (Task 5).
-- Produces: `showLinksList(chatId, userId, page, editMsgId, useNavFallback = true)`, `showLinkCard(chatId, userId, key, editMsgId, useNavFallback = true)`, `showAdminMenu(chatId, userId, editMsgId, useNavFallback = true)`. В `handleCallbackQuery` — `const editMsgId = update.message?.message_id ?? null`. Командные вызовы (`/links`, `/link`, `/start` → `showAdminMenu`) передают `editMsgId = null, useNavFallback = false` — ответ всегда новое сообщение (правка после финального ревью: без флага команды редактировали бы nav_msg-экран).
+- Produces: `showLinksList(chatId, userId, page, editMsgId, useNavFallback = true)`, `showLinkCard(chatId, userId, key, editMsgId, useNavFallback = true)`, `showAdminMenu(chatId, userId, editMsgId, useNavFallback = true)`. В `handleCallbackQuery` — `const editMsgId = update.message?.body?.mid ?? update.message?.message_id ?? null` (проверка payload Task 1: реальный формат — `body.mid`, см. спеку §10). Командные вызовы (`/links`, `/link`, `/start` → `showAdminMenu`) передают `editMsgId = null, useNavFallback = false` — ответ всегда новое сообщение (правка после финального ревью: без флага команды редактировали бы nav_msg-экран).
 
 - [ ] **Step 1: Написать падающие интеграционные тесты** (добавить новый describe в конец `test/handler.test.js`)
 
@@ -754,7 +754,7 @@ Expected: FAIL — тест «should edit the callback source message in place»
 После `const userId = cb.user.user_id` (строка 484):
 
 ```js
-  const editMsgId = update.message?.message_id ?? null
+  const editMsgId = update.message?.body?.mid ?? update.message?.message_id ?? null
 ```
 
 - [ ] **Step 4: Обновить сигнатуры хелперов и их внутренние отправки**

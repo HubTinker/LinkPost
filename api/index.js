@@ -1203,8 +1203,7 @@ app.post('/webhook', async (c) => {
     } else if (update.update_type === 'message_created') {
       await handleMessage(update)
     } else if (update.update_type === 'message_callback') {
-      console.log('[API] message_callback RAW:', JSON.stringify(update))
-      await handleCallbackQuery(update)
+            await handleCallbackQuery(update)
     }
     if (update.update_type === 'bot_stopped') {
       const userId = update.user?.user_id

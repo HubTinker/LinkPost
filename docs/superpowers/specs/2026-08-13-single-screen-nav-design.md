@@ -27,8 +27,8 @@
 
 | Ситуация | Поведение |
 |---|---|
-| Нажата inline-кнопка навигации, `message_id` есть | Edit сообщения-источника |
-| `message_id` отсутствует | Фолбэк через `nav_msg:{chatId}`, затем новый message |
+| Нажата inline-кнопка навигации, id сообщения (`body.mid`) есть | Edit сообщения-источника |
+| id сообщения (`body.mid`) отсутствует | Фолбэк через `nav_msg:{chatId}`, затем новый message |
 | Edit source завершился ошибкой | **Не переходить к `nav_msg`**; delete source (best-effort) + send new |
 | Пользователь отправил текст | Новое сообщение |
 | Пользователь отправил изображение | Новое сообщение |
@@ -48,6 +48,7 @@
 
 - Вынести из `sendMessageWithKeyboard` билдер `buildKeyboardAttachment(buttons)` — та же схема: `attachments: [{ type: 'inline_keyboard', payload: { buttons } }]`. Используется send- и edit-вариантами.
 - **`editMessageWithKeyboard(chatId, messageId, text, buttons)`** — `PUT /messages?chat_id=&message_id=` с текстом и клавиатурой.
+- **`extractMessageId(response)`** — нормализация id из ответа MAX API: `message.body.mid` (реальный формат) или `message_id`.
 - **`deleteMessage(chatId, messageId)`** — `DELETE /messages?chat_id=&message_id=`.
 - Существующий `editMessage` (текст без клавиатуры) остаётся для прогресса рассылок.
 
@@ -104,7 +105,8 @@ async function renderScreen ({ chatId, editMsgId, text, buttons, useNavFallback 
   }
   try {
     const resp = await sendMessageWithKeyboard(chatId, text, buttons)
-    if (resp?.message_id) await saveNavMessageIdSafely(chatId, resp.message_id)
+    const respMid = extractMessageId(resp)
+    if (respMid != null) await saveNavMessageIdSafely(chatId, respMid)
     return resp
   } catch (e) {
     alog('WARN', 'renderScreen: send failed: %s', e.message)
@@ -138,7 +140,7 @@ async function saveNavMessageIdSafely (chatId, messageId) {
 
 ### 5.1. `handleCallbackQuery`
 
-- В начале: `const editMsgId = update.message?.message_id ?? null`.
+- В начале: `const editMsgId = update.message?.body?.mid ?? update.message?.message_id ?? null` (реальный формат — `body.mid`, подтверждён на живом webhook 2026-08-13).
 - **Все рендер-ответы** (экраны с клавиатурой) → `renderScreen({ chatId, editMsgId, ... })` вместо `sendMessageWithKeyboard`:
   `links`, `links_page:*`, `create`, `users`, `broadcast_menu`, `broadcast_create`, `stats`, `stats_general`, `stats_by_key`, `stats_key:*`, `stats_top`, `stats_broadcasts_overall`, `broadcast_images_done:*`, `broadcast_buttons_done:*`, `broadcast_test:*` (только экран результата), `broadcast_restart:*`, `broadcast_confirm_now:*` (см. §6), `broadcast_list`, `broadcast_view:*`, `broadcast_stats:*`, `broadcast_delete:*`, `broadcast_delete_confirm:*`, `broadcast_stop:*`, `broadcast_resume:*`, `broadcast_edit:*`, `broadcast_clear_stale`, `back` (админская ветка → `showAdminMenu`; не-админская подсказка без клавиатуры — как сейчас, `sendMessage`), `del:*`, `confirm_del:*`.
 - **Контент-отправки остаются как есть** (новые сообщения): `link_preview` (`sendMessageWithLink`), тестовая отправка рассылки (`sendBroadcastMessage`), progress-сообщения, summary, все plain-ошибки (`❌ ...` через `sendMessage`).
@@ -247,8 +249,12 @@ send new
 
 ---
 
-## 10. Допущение
+## 10. Проверка payload (Task 1) — ВЫПОЛНЕНА
 
-`message_callback`-обновление содержит `message_id` у `update.message` (предположение; код уже использует `update.message.recipient.chat_id`, но наличие `message_id` на реальном трафике не подтверждено). Если `message_id` не приходит — фича работает через фолбэк `nav_msg:{chatId}` (§3, строка 2).
+Проверено на живом webhook (Amvera, 2026-08-13):
 
-**Первый технический шаг implementation plan** — проверка фактического payload `message_callback` на тестовом webhook до основной реализации: подтвердить/опровергнуть наличие `update.message.message_id`. Если подтверждено — основной путь `editMsgId`; если нет — основной путь `nav_msg` (fallback уже предусмотрен, но знать это нужно до реализации, а не после деплоя).
+- `update.message.message_id` **отсутствует** в `message_callback`-обновлениях.
+- Реальный идентификатор сообщения — `update.message.body.mid` (строка вида `mid.00000000167b21dd019ffa40a8604932`).
+- Ответы MAX API (`POST /messages`) тоже содержат `message.body.mid`, а не `message_id` — нормализация через `extractMessageId` (§4.1) обязательна для сохранения `nav_msg`/progress-сообщений.
+- `PUT /messages` и `DELETE /messages` принимают `message_id=<mid>` (проверено: PUT → `{"success":true}`, навигация переписывает одно и то же сообщение).
+- Основной путь — `editMsgId = update.message.body.mid`; фолбэк `nav_msg:{chatId}` остаётся страховкой на случай отсутствия id.
