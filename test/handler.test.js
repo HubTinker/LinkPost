@@ -132,6 +132,9 @@ describe('handleMessage commands', () => {
     })
     const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('http'))
     assert.ok(responseCall, 'URL validation error not found')
+    assert.equal(responseCall.body.attachments[0].type, 'inline_keyboard', 'should have keyboard')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
   })
 
   it('/setlink should require all arguments', async () => {
@@ -142,6 +145,9 @@ describe('handleMessage commands', () => {
     })
     const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('Формат'))
     assert.ok(responseCall, 'format error not found')
+    assert.equal(responseCall.body.attachments[0].type, 'inline_keyboard', 'should have keyboard')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
   })
 
   it('/setlink should reject key longer than 50 characters', async () => {
@@ -152,6 +158,9 @@ describe('handleMessage commands', () => {
     })
     const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('слишком длинный'))
     assert.ok(responseCall, 'key length validation error not found')
+    assert.equal(responseCall.body.attachments[0].type, 'inline_keyboard', 'should have keyboard')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
   })
 
   it('/setlink should reject URL longer than 2048 characters', async () => {
@@ -163,6 +172,9 @@ describe('handleMessage commands', () => {
     })
     const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('слишком длинный'))
     assert.ok(responseCall, 'URL length validation error not found')
+    assert.equal(responseCall.body.attachments[0].type, 'inline_keyboard', 'should have keyboard')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
   })
 
   it('/dellink should show confirmation instead of deleting', async () => {

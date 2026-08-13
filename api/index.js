@@ -359,7 +359,7 @@ async function handleMessage (update) {
   if (text.startsWith('/setlink')) {
     const [key, url, ...rest] = parseArgs(text)
     if (!key || !url || !rest.length) {
-      return sendMessage(chat_id,
+      return sendCommandResult(chat_id,
         '⚠️ Формат: /setlink <ключ> <url> <сообщение>\n\n' +
         'Пример:\n/setlink vip https://max.ru/channel/xxx Добро пожаловать! 🎉'
       )
@@ -368,13 +368,13 @@ async function handleMessage (update) {
       const u = new URL(url)
       if (!['http:', 'https:'].includes(u.protocol)) throw new Error()
     } catch {
-      return sendMessage(chat_id, '⚠️ URL должен быть валидным и начинаться с http:// или https://')
+      return sendCommandResult(chat_id, '⚠️ URL должен быть валидным и начинаться с http:// или https://')
     }
     if (key.length > 50) {
-      return sendMessage(chat_id, '⚠️ Ключ слишком длинный (максимум 50 символов).')
+      return sendCommandResult(chat_id, '⚠️ Ключ слишком длинный (максимум 50 символов).')
     }
     if (url.length > 2048) {
-      return sendMessage(chat_id, '⚠️ URL слишком длинный (максимум 2048 символов).')
+      return sendCommandResult(chat_id, '⚠️ URL слишком длинный (максимум 2048 символов).')
     }
     const msg = rest.join(' ').slice(0, 4096)
     alog('DEBUG', ' /setlink: key=%s, url=%s, creator=%d', key, url, userId)
