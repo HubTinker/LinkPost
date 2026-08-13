@@ -1036,7 +1036,7 @@ describe('broadcast_test callback', () => {
       callback: { payload: `broadcast_test:${b.id}`, user: { user_id: 123 } },
       message: { recipient: { chat_id: 1 } }
     })
-    const sendCalls = fetchCalls.filter(c => c.url?.includes('chat_id=1'))
+    const sendCalls = fetchCalls.filter(c => c.url?.includes('user_id=123'))
     assert.ok(sendCalls.length >= 1, 'should send message to admin chat')
     assert.ok(sendCalls.some(c => c.body.text === 'Test broadcast'), 'should include broadcast text')
   })
@@ -1111,8 +1111,8 @@ describe('broadcast_confirm_now flow', () => {
       message: { recipient: { chat_id: 1 } }
     })
 
-    const sendToUser100 = fetchCalls.filter(c => c.url?.includes('chat_id=100'))
-    const sendToUser200 = fetchCalls.filter(c => c.url?.includes('chat_id=200'))
+    const sendToUser100 = fetchCalls.filter(c => c.url?.includes('user_id=100'))
+    const sendToUser200 = fetchCalls.filter(c => c.url?.includes('user_id=200'))
     assert.strictEqual(sendToUser100.length, 1, 'should send to user 100')
     assert.strictEqual(sendToUser200.length, 1, 'should send to user 200')
   })
@@ -1127,7 +1127,7 @@ describe('broadcast_confirm_now flow', () => {
 
     const originalFetch = global.fetch
     global.fetch = async (url, opts) => {
-      if (typeof url === 'string' && url.includes('chat_id=100')) {
+      if (typeof url === 'string' && url.includes('user_id=100')) {
         throw new Error('Network error for user 100')
       }
       return { ok: true, json: async () => ({ ok: true }), text: async () => '', status: 200 }
