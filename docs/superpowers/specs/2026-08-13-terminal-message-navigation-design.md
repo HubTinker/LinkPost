@@ -48,6 +48,8 @@ async function sendCommandResult (chatId, text, actions = [], backData = 'back')
 | 5 | `/setlink` длинный URL (L369) | `sendMessage`, тупик | `sendCommandResult` без actions |
 | 6 | `/dellink` ключ не найден (L389) | `sendMessage`, тупик | `sendCommandResult` без actions |
 | 7 | `/dellink` нет прав (L391) | `sendMessage`, тупик | `sendCommandResult` без actions |
+
+> Примечание к строке 7: ветка недостижима через команды (не-админ отсечён на L345–348, админ всегда проходит `canManage`). Меняем для консистентности — тот же паттерн ошибки жив в callback-флоу `del:` для создателей-не-админов, и при изменении фильтра команд ветка не станет тупиком.
 | 8 | Рассылка: «📷 Изображение добавлено» (L483) | `sendMessage`, тупик | `sendCommandResult` с actions: `[{text:'✅ Готово',data:'broadcast_images_done:<id>'}]`, `backData: 'broadcast_menu'` |
 
 ### Почему нет ветки не-админа в `/setlink`
@@ -76,7 +78,7 @@ async function sendCommandResult (chatId, text, actions = [], backData = 'back')
 
 - `/setlink should create a link for admin` — добавить проверку `attachments[0].type === 'inline_keyboard'`, 2 ряда кнопок, payload'ы `links`, `create`, `back`.
 - 4 теста ошибок `/setlink` — добавить проверку кнопки с payload `back`.
-- 2 теста ошибок `/dellink` — добавить проверку кнопки с payload `back`.
+- 1 тест ошибки `/dellink` (`warn on missing key`) — добавить проверку кнопки с payload `back`. Ветка «нет прав» теста не имеет (недостижима через команды, см. примечание к строке 7) и новый тест для неё не пишем.
 
 ### Добавить новый
 
