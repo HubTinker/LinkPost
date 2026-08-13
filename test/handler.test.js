@@ -202,6 +202,22 @@ describe('handleMessage commands', () => {
     })
     const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('не найден'))
     assert.ok(responseCall, 'not found warning not found')
+    assert.equal(responseCall.body.attachments[0].type, 'inline_keyboard', 'should have keyboard')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
+  })
+
+  it('/dellink should warn when key omitted', async () => {
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/dellink' } },
+      user: { user_id: 123 }
+    })
+    const responseCall = fetchCalls.find(c => c.body.text && c.body.text.includes('Укажи ключ'))
+    assert.ok(responseCall, 'missing key argument warning not found')
+    assert.equal(responseCall.body.attachments[0].type, 'inline_keyboard', 'should have keyboard')
+    const buttons = responseCall.body.attachments[0].payload.buttons.flat()
+    assert.ok(buttons.some(b => b.payload === 'back'), 'should have back button')
   })
 
   it('/dellink should be silently ignored for non-admin (not owner)', async () => {

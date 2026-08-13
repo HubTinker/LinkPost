@@ -396,12 +396,12 @@ async function handleMessage (update) {
 
   if (text.startsWith('/dellink')) {
     const [key] = parseArgs(text)
-    if (!key) return sendMessage(chat_id, '⚠️ Укажи ключ: /dellink <ключ>')
+    if (!key) return sendCommandResult(chat_id, '⚠️ Укажи ключ: /dellink <ключ>')
     const existing = await getLink(key)
-    if (!existing) return sendMessage(chat_id, `❌ Ключ "${key}" не найден.`)
+    if (!existing) return sendCommandResult(chat_id, `❌ Ключ "${key}" не найден.`)
     if (!canManage(userId, existing)) {
       alog('DEBUG', ' /dellink: denied, key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
-      return sendMessage(chat_id, '⛔ Вы можете удалять только свои ключи.')
+      return sendCommandResult(chat_id, '⛔ Вы можете удалять только свои ключи.')
     }
     alog('DEBUG', ' /dellink: confirmed for key=%s, userId=%d, creator=%d', key, userId, existing.creator_id)
     return sendMessageWithKeyboard(
