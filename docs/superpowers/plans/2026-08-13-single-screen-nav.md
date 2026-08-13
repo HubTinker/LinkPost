@@ -16,7 +16,9 @@
 - **Жёсткий инвариант:** если `editMsgId` передан, `nav_msg` не используется ни при каких обстоятельствах (в т.ч. после неудачного edit). После ошибки edit удаляем ровно тот target, который пытались редактировать.
 - `renderScreen` вызывается только с непустым `buttons` (экраны без клавиатуры — `sendMessage`, как сегодня).
 - `status_message_id` хранит только ID статусного экрана конкретного запуска рассылки («запущена…» → «завершена…»); не progress, не summary, не test.
-- Ошибки без разбора кодов: edit fail → `alog('WARN', ...)` → best-effort `deleteMessage(target)` → `sendMessageWithKeyboard`. `renderScreen` не бросает наружу.
+- Ошибки без разбора кодов: edit fail → `alog('WARN', ...)` → best-effort `deleteMessage(target)` → `sendMessageWithKeyboard`. **`renderScreen` не бросает наружу при ошибках API/KV**: edit fail → фолбэк; delete fail → WARN; send fail → WARN + `null`; KV fail (в т.ч. `setNavMessageId`/`getNavMessageId`) → только WARN. Единственный throw — guard непустых `buttons` (программистская ошибка вызова, не runtime-отказ).
+- **Разделение операций в `renderScreen`:** критическая операция UI — edit сообщения; служебная запись `nav_msg` — best-effort. Сбой KV НЕ превращает успешный edit в fallback (правка плана после ревью).
+- `nav_msg` обновляется только через `renderScreen`; `sendMessage`, preview, summary, progress и т.п. его не меняют.
 - TTL: `nav_msg:{chatId}` — 24 часа; `broadcast:{id}:status_msg` — 7 дней.
 - Команды, контент-отправки, `handleBotStarted`, storage-слой — не трогаем.
 - Запуск тестов: `npm test` (все), либо `node --test test/<файл>.test.js` (один файл).
@@ -68,12 +70,9 @@
     }
 ```
 
-- [ ] **Step 5: Коммит**
+- [ ] **Step 5: Коммит НЕ создавать**
 
-```bash
-git add api/index.js
-git commit -m "chore: verify message_callback payload shape"
-```
+Лог добавлен и удалён — итоговый дифф пуст, отдельный коммит не нужен (правка плана после ревью: проверка не должна порождать промежуточные коммиты). Результат проверки зафиксировать в тексте коммита Task 2. Если `message_id` отсутствует — основной путь через `nav_msg` (renderScreen уже покрывает через `editMsgId ?? nav_msg`); пометить это в коммите Task 2.
 
 ---
 
@@ -163,6 +162,8 @@ Expected: FAIL — `editMessageWithKeyboard is not a function`
 - [ ] **Step 3: Реализовать**
 
 В `lib/max-api.js`: вынести билдер из `sendMessageWithKeyboard` и добавить две функции.
+
+**Важно (правка плана после ревью):** `buildKeyboardAttachment` — точное извлечение существующей схемы преобразования кнопок, НЕ новая схема. Текущий `sendMessageWithKeyboard` превращает каждую кнопку в `{ type: 'callback', text, payload: btn.data }`; билдер копирует эту логику без изменений. Если в будущем появятся кнопки других типов — расширять билдер отдельно, не меняя поведение существующих вызовов.
 
 ```js
 export function buildKeyboardAttachment (buttons) {
@@ -543,6 +544,22 @@ describe('renderScreen', () => {
     assert.ok(byUrl('chat_id=1').some(c => !c.url.includes('message_id')), 'send fallback expected')
   })
 
+  it('should not delete or resend when nav persistence fails after successful edit', async () => {
+    // Правка плана №1: сбой KV не должен превращать успешный edit в fallback
+    const origSet = kv.set
+    kv.set = async () => { throw new Error('kv down') }
+    try {
+      await renderScreen({ chatId: 1, editMsgId: 90, text: 'hello', buttons: BUTTONS })
+    } finally {
+      kv.set = origSet
+    }
+    const edits = byUrl('message_id=90')
+    assert.equal(edits.length, 1, 'edit should be attempted once')
+    assert.equal(edits[0].method, 'PUT')
+    assert.equal(byUrl('message_id=90').filter(c => c.method === 'DELETE').length, 0, 'no delete after successful edit')
+    assert.equal(byUrl('chat_id=1').filter(c => !c.url.includes('message_id')).length, 0, 'no fallback send')
+  })
+
   it('should throw when buttons is empty', async () => {
     await assert.rejects(
       () => renderScreen({ chatId: 1, editMsgId: null, text: 'hello', buttons: [] }),
@@ -571,29 +588,59 @@ import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebh
 import { setNavMessageId, getNavMessageId } from '../lib/nav.js'
 ```
 
-3) Добавить функцию после `showAdminMenu` (перед комментарием `// ── Обработчики событий`):
+3) Добавить функции после `showAdminMenu` (перед комментарием `// ── Обработчики событий`):
 
 ```js
-/** Единая точка рендера навигационных экранов: правка на месте, фолбэк delete+send */
+/** Best-effort запись nav_msg: сбой KV не должен ломать UI (правка плана №1) */
+async function saveNavMessageIdSafely (chatId, messageId) {
+  try {
+    await setNavMessageId(chatId, messageId)
+  } catch (e) {
+    alog('WARN', 'renderScreen: failed to save nav message id: %s', e.message)
+  }
+}
+
+/**
+ * Единая точка рендера навигационных экранов: правка на месте, фолбэк delete+send.
+ * НЕ бросает наружу при ошибках API/KV (кроме guard непустых buttons).
+ */
 async function renderScreen ({ chatId, editMsgId, text, buttons }) {
   if (!buttons?.length) throw new Error('renderScreen: buttons required')
   // target выбирается один раз: сообщение-источник, либо nav_msg (только если source отсутствует)
-  const targetId = editMsgId ?? (await getNavMessageId(chatId))
+  let targetId = editMsgId
+  if (targetId == null) {
+    try {
+      targetId = await getNavMessageId(chatId)
+    } catch (e) {
+      alog('WARN', 'renderScreen: getNavMessageId failed: %s', e.message)
+    }
+  }
   if (targetId != null) {
     try {
+      // Критическая операция UI — edit. KV-запись ниже best-effort и не попадает в этот try.
       await editMessageWithKeyboard(chatId, targetId, text, buttons)
-      await setNavMessageId(chatId, targetId)
+      await saveNavMessageIdSafely(chatId, targetId)
       return { message_id: targetId }
     } catch (e) {
+      // Сюда попадаем ТОЛЬКО при неудачном edit (KV-сбой сюда не приводит)
       alog('WARN', 'renderScreen: edit failed for %s: %s', targetId, e.message)
       // Жёсткий инвариант: после ошибки edit конкретного target nav_msg не используется.
       // Удаляем ровно тот target, который пытались редактировать.
-      try { await deleteMessage(chatId, targetId) } catch { /* best effort */ }
+      try {
+        await deleteMessage(chatId, targetId)
+      } catch (de) {
+        alog('WARN', 'renderScreen: delete failed for %s: %s', targetId, de.message)
+      }
     }
   }
-  const resp = await sendMessageWithKeyboard(chatId, text, buttons)
-  if (resp?.message_id) await setNavMessageId(chatId, resp.message_id)
-  return resp
+  try {
+    const resp = await sendMessageWithKeyboard(chatId, text, buttons)
+    if (resp?.message_id) await saveNavMessageIdSafely(chatId, resp.message_id)
+    return resp
+  } catch (e) {
+    alog('WARN', 'renderScreen: send failed: %s', e.message)
+    return null
+  }
 }
 ```
 
@@ -605,7 +652,7 @@ export { app, handleBotStarted, handleMessage, handleCallbackQuery, renderScreen
 - [ ] **Step 5: Запустить и убедиться, что проходит**
 
 Run: `node --test test/render-screen.test.js`
-Expected: PASS (6 тестов)
+Expected: PASS (7 тестов)
 
 - [ ] **Step 6: Прогнать существующий набор**
 
@@ -835,6 +882,9 @@ describe('broadcast status screen', () => {
     kv._clear()
   })
 
+  // batchSize в broadcast_confirm_now (api/index.js) = 20 — предположение теста должно быть явным
+  const BATCH_SIZE = 20
+
   async function seedUsers (n) {
     for (let i = 1; i <= n; i++) {
       await kv.sadd('users_all', String(i))
@@ -843,8 +893,8 @@ describe('broadcast status screen', () => {
   }
 
   it('should save status_message_id when first batch does not complete', async () => {
-    // 21 пользователь: первый батч = 20, рассылка продолжается
-    await seedUsers(21)
+    // BATCH_SIZE + 1 пользователь: первый батч = BATCH_SIZE, рассылка продолжается
+    await seedUsers(BATCH_SIZE + 1)
     const b = await createBroadcast({ text: 'Launch', created_by: 123 })
     await handleCallbackQuery({
       callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
@@ -861,7 +911,8 @@ describe('broadcast status screen', () => {
   })
 
   it('should not save status_message_id when first batch completes', async () => {
-    await seedUsers(2)
+    // BATCH_SIZE - 1 пользователь < BATCH_SIZE → первый батч завершает рассылку полностью
+    await seedUsers(BATCH_SIZE - 1)
     const b = await createBroadcast({ text: 'Short', created_by: 123 })
     await handleCallbackQuery({
       callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
@@ -882,6 +933,7 @@ describe('broadcast status screen', () => {
   it('should edit the stored status message on chain completion', async () => {
     process.env.SETUP_SECRET = 'test-secret'
     try {
+      // 2 < BATCH_SIZE → первый батч завершает рассылку
       await seedUsers(2)
       const b = await createBroadcast({ text: 'Chain', created_by: 123 })
       await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now(), created_by_chat_id: 1 })
@@ -907,6 +959,7 @@ describe('broadcast status screen', () => {
     try {
       const { setNavMessageId } = await import('../lib/nav.js')
       await setNavMessageId(1, 999)
+      // 2 < BATCH_SIZE → первый батч завершает рассылку
       await seedUsers(2)
       const b = await createBroadcast({ text: 'NoNav', created_by: 123 })
       await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now(), created_by_chat_id: 1 })
@@ -995,7 +1048,7 @@ Expected: FAIL — «should save status_message_id when first batch does not com
           editMessageWithKeyboard(summaryChatId, statusMsgId,
             `✅ Рассылка #${b.id} завершена! Отправлено ${users.length} сообщений.`,
             [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-          ).catch(e => console.warn('[broadcast] status screen edit failed:', e.message))
+          ).catch(e => alog('WARN', 'broadcast %s: status screen edit failed: %s', b.id, e.message))
         }
 ```
 
@@ -1009,7 +1062,7 @@ Expected: FAIL — «should save status_message_id when first batch does not com
           editMessageWithKeyboard(summaryChatId, statusMsgId,
             `✅ Рассылка #${b.id} завершена! Отправлено ${users.length} сообщений.`,
             [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-          ).catch(e => console.warn('[broadcast] cron status screen edit failed:', e.message))
+          ).catch(e => alog('WARN', 'broadcast %s: cron status screen edit failed: %s', b.id, e.message))
         }
 ```
 
