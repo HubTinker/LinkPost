@@ -70,32 +70,67 @@
 
 ```js
 // text: string, buttons: массив рядов (всегда непустой — см. §5.4)
-async function renderScreen ({ chatId, editMsgId, text, buttons }) {
+// useNavFallback: разрешает fallback на nav_msg при отсутствии editMsgId.
+// Команды (/links, /link, /start) передают false — их ответ всегда новое сообщение.
+async function renderScreen ({ chatId, editMsgId, text, buttons, useNavFallback = true }) {
+  if (!buttons?.length) throw new Error('renderScreen: buttons required')
   // target — единственное сообщение, которое пытаемся перезаписать
-  const targetId = editMsgId ?? (await getNavMessageId(chatId))
-  if (targetId != null) {
+  let targetId = editMsgId
+  if (targetId == null && useNavFallback) {
     try {
-      await editMessageWithKeyboard(chatId, targetId, text, buttons)
-      await setNavMessageId(chatId, targetId)
-      return { message_id: targetId }
+      targetId = await getNavMessageId(chatId)
     } catch (e) {
-      alog('WARN', 'renderScreen: edit failed for %s: %s', targetId, e.message)
-      // Не переходим к nav_msg после ошибки edit конкретного target
-      try { await deleteMessage(chatId, targetId) } catch { /* best effort */ }
+      alog('WARN', 'renderScreen: getNavMessageId failed: %s', e.message)
     }
   }
-  const resp = await sendMessageWithKeyboard(chatId, text, buttons)
-  if (resp?.message_id) await setNavMessageId(chatId, resp.message_id)
-  return resp
+  if (targetId != null) {
+    let edited = false
+    try {
+      await editMessageWithKeyboard(chatId, targetId, text, buttons)
+      edited = true
+    } catch (e) {
+      alog('WARN', 'renderScreen: edit failed for %s: %s', targetId, e.message)
+      // Жёсткий инвариант: после ошибки edit конкретного target nav_msg не используется.
+      // Удаляем ровно тот target, который пытались редактировать.
+      try { await deleteMessage(chatId, targetId) } catch (de) {
+        alog('WARN', 'renderScreen: delete failed for %s: %s', targetId, de.message)
+      }
+    }
+    // KV-запись выполняется ТОЛЬКО после успешного edit и вне edit-try
+    if (edited) {
+      await saveNavMessageIdSafely(chatId, targetId)
+      return { message_id: targetId }
+    }
+  }
+  try {
+    const resp = await sendMessageWithKeyboard(chatId, text, buttons)
+    if (resp?.message_id) await saveNavMessageIdSafely(chatId, resp.message_id)
+    return resp
+  } catch (e) {
+    alog('WARN', 'renderScreen: send failed: %s', e.message)
+    return null
+  }
+}
+
+/** Best-effort запись nav_msg: сбой KV не должен ломать UI */
+async function saveNavMessageIdSafely (chatId, messageId) {
+  try {
+    await setNavMessageId(chatId, messageId)
+  } catch (e) {
+    alog('WARN', 'renderScreen: failed to save nav message id: %s', e.message)
+  }
 }
 ```
 
 Инварианты алгоритма:
 
-1. `target` выбирается ОДИН раз: `editMsgId`, либо (только если `editMsgId` отсутствует) `nav_msg`.
+1. `target` выбирается ОДИН раз: `editMsgId`, либо (только если `editMsgId` отсутствует и `useNavFallback` истинно) `nav_msg`.
 2. **Жёсткий инвариант:** если `editMsgId` был передан, `nav_msg` не используется ни при каких обстоятельствах — в том числе после неудачного edit. После ошибки edit удаляем ровно тот target, который пытались редактировать. Никогда не редактируем/удаляем другой экран из KV.
-3. В худшем случае (всё упало) — новое сообщение: поведение как сегодня.
-4. При любом успешном исходе актуальный `message_id` пишется в `nav_msg:{chatId}`.
+3. **Разделение операций:** try/catch охватывает ТОЛЬКО `editMessageWithKeyboard`; запись `nav_msg` — best-effort (`saveNavMessageIdSafely`), сбой KV никогда не превращает успешный edit в фолбэк delete+send.
+4. Non-throwing при ошибках API/KV: edit fail → WARN → delete (best-effort) → send; send fail → WARN + `null`; `getNavMessageId` fail → WARN. Единственный throw — guard непустых `buttons` (программистская ошибка).
+5. В худшем случае (всё упало) — новое сообщение: поведение как сегодня.
+6. При любом успешном исходе актуальный `message_id` пишется в `nav_msg:{chatId}` (только через `renderScreen`; `sendMessage`, preview, summary, progress его не меняют).
+7. **Команды не используют `nav_msg`:** `/start`, `/links`, `/link` вызывают хелперы/`renderScreen` с `useNavFallback: false` → ответ всегда новое сообщение (матрица §3).
 
 ---
 

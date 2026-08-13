@@ -603,12 +603,13 @@ async function saveNavMessageIdSafely (chatId, messageId) {
 /**
  * Единая точка рендера навигационных экранов: правка на месте, фолбэк delete+send.
  * НЕ бросает наружу при ошибках API/KV (кроме guard непустых buttons).
+ * useNavFallback=false (команды: /start, /links, /link) — ответ всегда новое сообщение.
  */
-async function renderScreen ({ chatId, editMsgId, text, buttons }) {
+async function renderScreen ({ chatId, editMsgId, text, buttons, useNavFallback = true }) {
   if (!buttons?.length) throw new Error('renderScreen: buttons required')
-  // target выбирается один раз: сообщение-источник, либо nav_msg (только если source отсутствует)
+  // target выбирается один раз: сообщение-источник, либо nav_msg (только если source отсутствует и разрешён фолбэк)
   let targetId = editMsgId
-  if (targetId == null) {
+  if (targetId == null && useNavFallback) {
     try {
       targetId = await getNavMessageId(chatId)
     } catch (e) {
@@ -616,11 +617,11 @@ async function renderScreen ({ chatId, editMsgId, text, buttons }) {
     }
   }
   if (targetId != null) {
+    let edited = false
     try {
-      // Критическая операция UI — edit. KV-запись ниже best-effort и не попадает в этот try.
+      // Критическая операция UI — edit. KV-запись ниже best-effort и вне этого try.
       await editMessageWithKeyboard(chatId, targetId, text, buttons)
-      await saveNavMessageIdSafely(chatId, targetId)
-      return { message_id: targetId }
+      edited = true
     } catch (e) {
       // Сюда попадаем ТОЛЬКО при неудачном edit (KV-сбой сюда не приводит)
       alog('WARN', 'renderScreen: edit failed for %s: %s', targetId, e.message)
@@ -631,6 +632,10 @@ async function renderScreen ({ chatId, editMsgId, text, buttons }) {
       } catch (de) {
         alog('WARN', 'renderScreen: delete failed for %s: %s', targetId, de.message)
       }
+    }
+    if (edited) {
+      await saveNavMessageIdSafely(chatId, targetId)
+      return { message_id: targetId }
     }
   }
   try {
@@ -676,7 +681,7 @@ git commit -m "feat: add renderScreen with edit-in-place fallback"
 
 **Interfaces:**
 - Consumes: `renderScreen` (Task 5).
-- Produces: `showLinksList(chatId, userId, page, editMsgId)`, `showLinkCard(chatId, userId, key, editMsgId)`, `showAdminMenu(chatId, userId, editMsgId)`. В `handleCallbackQuery` — `const editMsgId = update.message?.message_id ?? null`.
+- Produces: `showLinksList(chatId, userId, page, editMsgId, useNavFallback = true)`, `showLinkCard(chatId, userId, key, editMsgId, useNavFallback = true)`, `showAdminMenu(chatId, userId, editMsgId, useNavFallback = true)`. В `handleCallbackQuery` — `const editMsgId = update.message?.message_id ?? null`. Командные вызовы (`/links`, `/link`, `/start` → `showAdminMenu`) передают `editMsgId = null, useNavFallback = false` — ответ всегда новое сообщение (правка после финального ревью: без флага команды редактировали бы nav_msg-экран).
 
 - [ ] **Step 1: Написать падающие интеграционные тесты** (добавить новый describe в конец `test/handler.test.js`)
 
@@ -802,7 +807,7 @@ async function showLinksList (chatId, userId, page = 1, editMsgId = null) {
   })
 ```
 
-Вызовы из `handleMessage` (команды — новый экран): `/links` (строка 350) → `return showLinksList(chatId, userId, page, null)`; `/link` (строка 358) → `return showLinkCard(chatId, userId, key, null)`.
+Вызовы из `handleMessage` (команды — всегда новое сообщение): `/links` (строка 350) → `return showLinksList(chatId, userId, page, null, false)`; `/link` (строка 358) → `return showLinkCard(chatId, userId, key, null, false)`. `handleBotStarted` (админская ветка `/start`) → `showAdminMenu(chat_id, user?.user_id, null, false)`.
 
 - [ ] **Step 5: Перевести все навигационные колбэки на `renderScreen`**
 
