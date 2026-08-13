@@ -12,10 +12,10 @@
     "deploy:amvera": "bash scripts/deploy-amvera.sh"
   },
   "dependencies": {
-    "@hono/node-server": "^2.0.4",
+    "@hono/node-server": "^2.1.0",
     "@vercel/kv": "^3.0.0",
     "dotenv": "^17.4.2",
-    "hono": "^4.4.0"
+    "hono": "^4.13.1"
   },
   "engines": {
     "node": ">=18"
