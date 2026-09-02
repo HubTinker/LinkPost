@@ -7,7 +7,6 @@
     "dev": "node scripts/dev-server.js",
     "start": "node scripts/dev-server.js",
     "test": "node --test test/*.test.js",
-    "poll": "node poll.js",
     "deploy": "vercel --prod",
     "deploy:amvera": "bash scripts/deploy-amvera.sh"
   },

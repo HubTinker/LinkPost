@@ -2,16 +2,17 @@
 
 > Бот для мессенджера MAX: создавайте связки «ключ → ссылка на канал» и делитесь ими через deep-ссылки.
 
-LinkPost — простой бот на Hono.js, развёрнутый на Vercel Edge. Администраторы создают ключи, привязанные к ссылкам на каналы. Пользователи отправляют боту ключ и получают ссылку с кнопкой перехода.
+LinkPost — бот на Hono.js для мессенджера MAX. Администраторы создают ключи, привязанные к ссылкам на каналы. Пользователи отправляют боту ключ и получают ссылку с кнопкой перехода. Прод-окружение — Node.js на Amvera, код совместим с Vercel Edge (`api/` содержит webhook-эндпоинт для Vercel Functions).
 
 ## Быстрый старт
 
 ```bash
-git clone <repo>
-cd linkpost-bot
+git clone https://github.com/HubTinker/LinkPost.git
+cd LinkPost
 npm install
-vercel env pull
-vercel dev
+# создайте .env.local с переменными: BOT_TOKEN, SETUP_SECRET, KV_REST_API_URL,
+# KV_REST_API_TOKEN, ADMIN_USER_IDS, BOT_NICK (см. docs/configuration.md)
+npm run dev
 ```
 
 ## Возможности
@@ -21,6 +22,7 @@ vercel dev
 - **Учёт пользователей** — автоматическое сохранение информации о пользователях
 - **Inline-кнопки** — ссылки с кнопкой перехода в канал
 - **Администрирование** — команды в чате с разграничением прав
+- **Тесты** — `npm test` (юнит-тесты обработчиков и хранилища, `node --test`)
 
 ## Пример
 

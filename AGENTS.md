@@ -1,43 +1,44 @@
 # AGENTS.md
 
-> Этот файл — структурная карта проекта для AI-агентов. Автоматически сгенерирован `/aif`. Обновляйте при значительных изменениях структуры.
+> Этот файл — структурная карта проекта для AI-агентов. Обновляйте при значительных изменениях структуры.
 
 ## Обзор проекта
 
-LinkPost — бот для мессенджера MAX на Hono.js, развёрнутый на Vercel Edge. Позволяет администраторам создавать связки «ключ → ссылка на канал» и делиться ими через deep-ссылки.
+LinkPost — бот для мессенджера MAX на Hono.js. Прод-окружение — Node.js на Amvera, код совместим с Vercel Edge. Позволяет администраторам создавать связки «ключ → ссылка на канал» и делиться ими через deep-ссылки.
 
 ## Технологический стек
 
 - **Язык программирования:** JavaScript (ES Modules)
-- **Фреймворк:** Hono.js
+- **Фреймворк:** Hono.js (@hono/node-server)
 - **База данных:** Vercel KV (Redis)
 - **Мессенджер API:** MAX Bot API
-- **Развёртывание:** Vercel Edge Runtime
+- **Развёртывание:** Amvera (git-деплой), опционально Vercel Edge
 
 ## Структура проекта
 
 ```
 ./
-├── .ai-factory/              # Конфигурация AI Factory
-│   ├── DESCRIPTION.md        # Спецификация проекта
-│   ├── ARCHITECTURE.md       # Архитектурные решения
-│   ├── config.yaml           # Настройки AI Factory
-│   ├── rules/
-│   │   └── base.md           # Базовые правила проекта
-│   └── references/           # Справочные материалы
-│       ├── INDEX.md          # Указатель референсов
-│       └── max-bot-api.md    # MAX Bot API документация
-├── .opencode/                # Конфигурация OpenCode
-│   └── skills/               # AI Factory навыки
-├── .agents/skills/           # Внешние навыки (skills.sh)
-│   ├── hono/                 # Hono.js API reference
-│   └── upstash-redis-kv/     # Upstash Redis/KV
+├── api/
+│   └── index.js              # Точка входа: Hono-роуты (webhook, setup-webhook)
 ├── lib/
 │   ├── max-api.js            # Обёртка над MAX Bot REST API
-│   └── storage.js            # Слой Vercel KV (ключи, пользователи)
-├── api/
-│   └── index.js              # Точка входа с Hono-роутами
-└── opencode.json             # MCP конфигурация
+│   ├── storage.js            # Слой Vercel KV (ключи, пользователи)
+│   ├── broadcast.js          # Рассылки по пользователям
+│   ├── nav.js                # Кнопки навигации в сообщениях
+│   └── kv-mock.js            # In-memory-реализация KV для локальной разработки
+├── scripts/
+│   ├── dev-server.js         # Локальный dev-сервер (npm run dev)
+│   ├── amvera-server.js      # Production-сервер для Amvera
+│   ├── setup-webhook.js      # Регистрация webhook
+│   ├── backup-kv.js          # Бэкап данных KV
+│   ├── migrate-creators.js   # Миграция данных
+│   └── deploy-amvera.sh      # Деплой на Amvera
+├── test/                     # Юнит-тесты (node --test)
+├── docs/                     # Пользовательская документация
+├── vercel.json               # Конфиг Vercel (опциональный деплой)
+├── amvera.yaml               # Конфиг Amvera
+├── package.json
+└── README.md
 ```
 
 ## Ключевые точки входа
@@ -47,6 +48,8 @@ LinkPost — бот для мессенджера MAX на Hono.js, развёр
 | `api/index.js` | Hono-роуты: webhook, setup-webhook |
 | `lib/max-api.js` | MAX Bot API — отправка сообщений, регистрация webhook |
 | `lib/storage.js` | Vercel KV — связки ключ-ссылка, пользователи |
+| `scripts/dev-server.js` | Локальный запуск (`npm run dev`) |
+| `scripts/amvera-server.js` | Production-сервер для Amvera |
 
 ## Документация
 
@@ -57,16 +60,6 @@ LinkPost — бот для мессенджера MAX на Hono.js, развёр
 | Архитектура | `docs/architecture.md` | Структура проекта и паттерны |
 | API Reference | `docs/api.md` | Эндпоинты webhook и setup-webhook |
 | Конфигурация | `docs/configuration.md` | Переменные окружения |
-| MAX Bot API | `.ai-factory/references/max-bot-api.md` | Справочник по MAX Bot API |
-
-## Файлы контекста AI
-
-| Файл | Назначение |
-|------|------------|
-| AGENTS.md | Структурная карта проекта (этот файл) |
-| `.ai-factory/DESCRIPTION.md` | Спецификация проекта |
-| `.ai-factory/ARCHITECTURE.md` | Архитектурные решения и правила зависимостей |
-| CLAUDE.md | Правила для Claude Code |
 
 ## Правила для агентов
 
