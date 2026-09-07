@@ -20,10 +20,9 @@ import {
 import {
   createBroadcast, getBroadcast, updateBroadcast, deleteBroadcast,
   getAllBroadcasts, getScheduledBroadcasts,
-  markSent, markDelivered, markOpened, markUnsubbed, markFailed,
+  markOpened, markUnsubbed,
   getBroadcastStats, isSent,
-  setProgressMessageId, getProgressMessageId,
-  setStatusMessageId, getStatusMessageId,
+  setStatusMessageId,
   clearRunAttempted
 } from '../lib/broadcast.js'
 import { runBroadcastBatch, getEligibleUsers, getRunSentCount, getRecipientCounts } from '../lib/broadcast-runner.js'
@@ -62,9 +61,6 @@ const LINKS_PAGE_SIZE = 20
 
 /** Парсим аргументы: /command arg1 arg2 ...rest → ['arg1', 'arg2', ...] */
 const parseArgs = (text = '') => text.trim().split(/\s+/).slice(1)
-
-const delay = (ms) => new Promise(r => setTimeout(r, ms))
-const BATCH_DELAY = 50
 
 const APP_BASE_URL = process.env.VERCEL_URL
   ? `https://${process.env.VERCEL_URL}`
