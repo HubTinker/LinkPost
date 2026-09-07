@@ -6,7 +6,8 @@ import {
   getAllBroadcasts, getScheduledBroadcasts,
   markSent, isSent, markDelivered, markOpened, markUnsubbed, markFailed,
   getCursor, setCursor, getBroadcastStats, resetBroadcastStats,
-  setStatusMessageId, getStatusMessageId
+  setStatusMessageId, getStatusMessageId,
+  markRunAttempted, getRunAttempted, clearRunAttempted, getSentUsers
 } from '../lib/broadcast.js'
 
 import { kv } from '../lib/kv-mock.js'
@@ -272,5 +273,51 @@ describe('status message id', () => {
     await setStatusMessageId(b.id, 90)
     await resetBroadcastStats(b.id)
     assert.strictEqual(await kv.get(`broadcast:${b.id}:status_msg`), null)
+  })
+})
+
+describe('Broadcast run tracking', () => {
+  beforeEach(async () => {
+    await kv._clear()
+  })
+
+  it('should mark and read run attempted users', async () => {
+    const b = await createBroadcast({ text: 'Run', created_by: 123 })
+    await markRunAttempted(b.id, 100)
+    await markRunAttempted(b.id, 200)
+    const attempted = await getRunAttempted(b.id)
+    assert.ok(attempted.has(100))
+    assert.ok(attempted.has(200))
+    assert.strictEqual(attempted.has(300), false)
+  })
+
+  it('should clear run attempted', async () => {
+    const b = await createBroadcast({ text: 'Run', created_by: 123 })
+    await markRunAttempted(b.id, 100)
+    await clearRunAttempted(b.id)
+    assert.strictEqual((await getRunAttempted(b.id)).size, 0)
+  })
+
+  it('should delete run_attempted on deleteBroadcast', async () => {
+    const b = await createBroadcast({ text: 'Run', created_by: 123 })
+    await markRunAttempted(b.id, 100)
+    await deleteBroadcast(b.id)
+    assert.strictEqual((await kv.smembers(`broadcast:${b.id}:run_attempted`)).length, 0)
+  })
+
+  it('should clear run_attempted on resetBroadcastStats', async () => {
+    const b = await createBroadcast({ text: 'Run', created_by: 123 })
+    await markRunAttempted(b.id, 100)
+    await resetBroadcastStats(b.id)
+    assert.strictEqual((await kv.smembers(`broadcast:${b.id}:run_attempted`)).length, 0)
+  })
+
+  it('should persist new fields via updateBroadcast', async () => {
+    const b = await createBroadcast({ text: 'Run', created_by: 123 })
+    await updateBroadcast(b.id, { limit: 100, _awaiting_limit: true, _run_sent_at_start: 5 })
+    const updated = await getBroadcast(b.id)
+    assert.strictEqual(updated.limit, 100)
+    assert.strictEqual(updated._awaiting_limit, true)
+    assert.strictEqual(updated._run_sent_at_start, 5)
   })
 })
