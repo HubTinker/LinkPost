@@ -16,8 +16,8 @@ global.fetch = async (url, opts) => {
 }
 
 const { kv } = await import('../lib/kv-mock.js')
-const { createBroadcast, updateBroadcast, markSent, markFailed, isSent, getBroadcastStats, clearRunAttempted } = await import('../lib/broadcast.js')
-const { runBroadcastBatch, getEligibleUsers, getRunSentCount } = await import('../lib/broadcast-runner.js')
+const { createBroadcast, updateBroadcast, markSent, markFailed, isSent, getBroadcastStats, clearRunAttempted, getBroadcast } = await import('../lib/broadcast.js')
+const { runBroadcastBatch, getEligibleUsers, getRunSentCount, getRecipientCounts } = await import('../lib/broadcast-runner.js')
 
 async function seedUsers (specs) {
   for (const s of specs) {
@@ -128,7 +128,8 @@ describe('runBroadcastBatch', () => {
     const res1 = await runBroadcastBatch(b.id, 2)
     assert.strictEqual(res1.done, false)
     assert.strictEqual(res1.sent, 2)
-    await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
+    assert.strictEqual((await getBroadcast(b.id)).status, 'scheduled', 'runner restores scheduled on done:false')
+    // неявное продолжение: следующий вызов подхватывает рассылку без ручного restore
     const res2 = await runBroadcastBatch(b.id, 2)
     assert.strictEqual(res2.done, true)
     assert.strictEqual(res2.sent, 1)
@@ -175,6 +176,78 @@ describe('runBroadcastBatch', () => {
     assert.ok(summary.body.text.includes('в этот запуск: 30'))
     const bFinal = await (await import('../lib/broadcast.js')).getBroadcast(b.id)
     assert.strictEqual(bFinal.status, 'sent')
+  })
+
+  it('should finalize on entry when S >= limit (stop-at-limit resume)', async () => {
+    await seedUsers([{ id: 1 }, { id: 2 }, { id: 3 }])
+    const b = await createBroadcast({ text: 'Done', created_by: 123 })
+    await markSent(b.id, 1)
+    await markSent(b.id, 2)
+    await updateBroadcast(b.id, {
+      status: 'scheduled', scheduled_at: Date.now(), created_by_chat_id: 1, limit: 2, _run_sent_at_start: 0
+    })
+    const res = await runBroadcastBatch(b.id)
+    assert.strictEqual(res.done, true)
+    assert.strictEqual(res.sent, 0)
+    const fresh = await getBroadcast(b.id)
+    assert.strictEqual(fresh.status, 'sent')
+    const summary = fetchCalls.find(c => c.body?.text && c.body.text.includes('завершена'))
+    assert.ok(summary, 'summary should be sent')
+    assert.ok(summary.body.text.includes('в этот запуск: 2'))
+  })
+
+  it('should restore scheduled and rethrow when KV fails mid-run (C2)', async () => {
+    await seedUsers([{ id: 1 }, { id: 2 }, { id: 3 }])
+    const b = await createBroadcast({ text: 'KvDown', created_by: 123 })
+    await startRun(b, null)
+    const orig = kv.smembers
+    // Сбой KV при вычислении кандидатов (smembers) — без фикса рассылка застревала бы в 'sending'.
+    // (сбой kv.sadd в цикле ловится per-user обработчиком по spec §4.3 — наружу не выходит)
+    kv.smembers = async () => { throw new Error('kv down') }
+    try {
+      await assert.rejects(() => runBroadcastBatch(b.id, 2), /kv down/)
+      const fresh = await getBroadcast(b.id)
+      assert.strictEqual(fresh.status, 'scheduled')
+    } finally {
+      kv.smembers = orig
+    }
+  })
+
+  it('should be in sending status while a batch is in flight (spec 7.2)', async () => {
+    await seedUsers([{ id: 1 }, { id: 2 }, { id: 3 }])
+    const b = await createBroadcast({ text: 'Sending', created_by: 123 })
+    await startRun(b, null)
+    const original = global.fetch
+    let observed = null
+    global.fetch = async (url, opts) => {
+      if (!observed && String(url).includes('/messages?user_id=')) {
+        const fresh = await getBroadcast(b.id)
+        observed = fresh && fresh.status
+      }
+      return original(url, opts)
+    }
+    try {
+      await runBroadcastBatch(b.id, 2)
+      assert.strictEqual(observed, 'sending')
+    } finally {
+      global.fetch = original
+    }
+  })
+})
+
+describe('getRecipientCounts', () => {
+  beforeEach(async () => { await kv._clear(); fetchCalls = [] })
+
+  it('should count past-run failures as eligible while runner excludes them (I2)', async () => {
+    await seedUsers([{ id: 1 }, { id: 2 }, { id: 3 }])
+    const b = await createBroadcast({ text: 'M', created_by: 123 })
+    await markSent(b.id, 1)
+    await markSent(b.id, 3)
+    await markFailed(b.id, 2) // упал в прошлом запуске
+    await kv.sadd(`broadcast:${b.id}:run_attempted`, '2') // run_attempted покрывает и упавших
+    const counts = await getRecipientCounts(b)
+    assert.strictEqual(counts.eligible, 1)
+    assert.strictEqual((await getEligibleUsers(b)).length, 0)
   })
 })
 

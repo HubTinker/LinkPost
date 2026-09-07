@@ -963,7 +963,8 @@ async function handleCallbackQuery (update) {
     const [bid, nStr] = rest.split(':')
     if (!bid || !nStr) return sendMessage(chatId, '❌ Неверный выбор.')
     const n = Number(nStr)
-    const res = await startBroadcastRun(bid, Number.isFinite(n) && n >= 1 ? Math.floor(n) : null, chatId)
+    if (!Number.isInteger(n) || n < 1) return sendMessage(chatId, '❌ Неверный выбор.')
+    const res = await startBroadcastRun(bid, Math.floor(n), chatId)
     if (res.error === 'busy') return sendMessage(chatId, '⚠️ Сначала остановите текущую отправку.')
     if (res.error) return sendMessage(chatId, '❌ Рассылка не найдена.')
     return launchBroadcast(chatId, editMsgId, bid)
@@ -1023,7 +1024,7 @@ async function handleCallbackQuery (update) {
       const S = getRunSentCount(b, stats.sent)
       const eligible = await getEligibleUsers(b)
       detail += b.limit == null
-        ? `📤 Запуск: ${S} из ${eligible.length}\n`
+        ? `📤 Запуск: ${S} из ${S + eligible.length}\n`
         : `📤 Запуск: ${S} / ${b.limit}\n`
       detail += `✅ Получили всего: ${stats.sent} | ❌ Ошибок: ${stats.failed}\n`
     }

@@ -1247,6 +1247,101 @@ describe('broadcast go_all flow', () => {
   })
 })
 
+describe('broadcast wave fixes', () => {
+  beforeEach(() => {
+    fetchCalls = []
+    kv._clear()
+  })
+
+  it('C1: inline batch restores scheduled; chain completes with summary to 25 users', async () => {
+    process.env.SETUP_SECRET = 'test-secret'
+    try {
+      await seedUsers(25)
+      const b = await createBroadcast({ text: 'Chain', created_by: 123 })
+      await handleCallbackQuery({
+        callback: { payload: `broadcast_go_all:${b.id}`, user: { user_id: 123 } },
+        message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+      })
+      // C1: инлайн-батч (20 доставок) возвращает рассылку в очередь, а не оставляет в 'sending'
+      assert.strictEqual((await getBroadcast(b.id)).status, 'scheduled')
+      // runner ставит scheduled_at = now + 1000 (для cron); ждём, чтобы цепочка подхватила сразу
+      await new Promise(r => setTimeout(r, 1100))
+      const { app } = await import('../api/index.js')
+      const res = await app.request('/process-broadcasts?secret=test-secret')
+      assert.equal(res.status, 200)
+      assert.strictEqual((await getBroadcast(b.id)).status, 'sent')
+      const summary = fetchCalls.find(c => c.body?.text && c.body.text.includes('в этот запуск: 25'))
+      assert.ok(summary, 'final summary should mention 25 in this run')
+      const targets = fetchCalls.filter(c => c.url.includes('/messages?user_id=')).map(c => c.url.split('user_id=')[1])
+      assert.strictEqual(new Set(targets).size, 25, 'exactly 25 distinct users should be sent')
+    } finally {
+      delete process.env.SETUP_SECRET
+    }
+  })
+
+  it('stop/resume should complete without duplicates (21 distinct users)', async () => {
+    process.env.SETUP_SECRET = 'test-secret'
+    try {
+      await seedUsers(21)
+      const b = await createBroadcast({ text: 'StopResume', created_by: 123 })
+      await handleCallbackQuery({
+        callback: { payload: `broadcast_go_all:${b.id}`, user: { user_id: 123 } },
+        message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+      })
+      await handleCallbackQuery({
+        callback: { payload: `broadcast_stop:${b.id}`, user: { user_id: 123 } },
+        message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+      })
+      await handleCallbackQuery({
+        callback: { payload: `broadcast_resume:${b.id}`, user: { user_id: 123 } },
+        message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+      })
+      const { app } = await import('../api/index.js')
+      const res = await app.request('/process-broadcasts?secret=test-secret')
+      assert.equal(res.status, 200)
+      assert.strictEqual((await getBroadcast(b.id)).status, 'sent')
+      const targets = fetchCalls.filter(c => c.url.includes('/messages?user_id=')).map(c => c.url.split('user_id=')[1])
+      assert.strictEqual(new Set(targets).size, 21, 'all 21 users reached exactly once')
+    } finally {
+      delete process.env.SETUP_SECRET
+    }
+  })
+
+  it('in-flight detail and stats show 20 of 25 (Всем)', async () => {
+    await seedUsers(25)
+    const b = await createBroadcast({ text: 'Inflight', created_by: 123 })
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_go_all:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+    })
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_view:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+    })
+    const view = fetchCalls.find(c => c.method === 'PUT' && c.url.includes('message_id=90') && c.body?.text?.includes('📤 Запуск: 20 из 25'))
+    assert.ok(view, 'in-flight detail should show 20 of 25')
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_stats:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+    })
+    const stats = fetchCalls.find(c => c.method === 'PUT' && c.url.includes('message_id=90') && c.body?.text?.includes('В этот запуск: 20 (лимит: все)'))
+    assert.ok(stats, 'stats should show 20 in this run, limit all')
+  })
+
+  it('M1: invalid numeric suffix on broadcast_go is rejected without sends', async () => {
+    await seedUsers(3)
+    const b = await createBroadcast({ text: 'Guard', created_by: 123 })
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_go:${b.id}:abc`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+    })
+    const reply = fetchCalls.find(c => c.body?.text === '❌ Неверный выбор.')
+    assert.ok(reply, 'error reply expected')
+    const sends = fetchCalls.filter(c => c.url.includes('/messages?user_id='))
+    assert.strictEqual(sends.length, 0, 'no user sends on invalid suffix')
+  })
+})
+
 describe('single-screen navigation', () => {
   beforeEach(() => {
     fetchCalls = []
