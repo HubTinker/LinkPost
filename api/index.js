@@ -21,7 +21,7 @@ import {
   createBroadcast, getBroadcast, updateBroadcast, deleteBroadcast,
   getAllBroadcasts, getScheduledBroadcasts,
   markSent, markDelivered, markOpened, markUnsubbed, markFailed,
-  getBroadcastStats, getCursor, setCursor, isSent,
+  getBroadcastStats, isSent,
   setProgressMessageId, getProgressMessageId,
   setStatusMessageId, getStatusMessageId,
   clearRunAttempted
@@ -1264,6 +1264,21 @@ app.get('/setup-webhook', async (c) => {
   return c.json({ webhookUrl, result })
 })
 
+/** Общий шаг обработки одной рассылки для /process-broadcasts и cron. */
+async function processScheduledBroadcast (b, { continueChain = false, host = null, scheme = 'https', secret = null } = {}) {
+  const res = await runBroadcastBatch(b.id)
+  if (res.error || res.stopped || res.done) return res
+  const fresh = await getBroadcast(b.id)
+  if (fresh && fresh.status === 'cancelled') return { ...res, stopped: true }
+  await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
+  if (continueChain && host && secret) {
+    await fetch(`${scheme}://${host}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
+      .then(r => r.json()).then(r => alog('INFO', 'broadcast %s: chain call result: %j', b.id, r))
+      .catch(e => console.warn('[broadcast] chain call failed:', e.message))
+  }
+  return res
+}
+
 app.get('/process-broadcasts', async (c) => {
   const secret = c.req.query('secret')
   if (secret !== process.env.SETUP_SECRET) {
@@ -1276,134 +1291,15 @@ app.get('/process-broadcasts', async (c) => {
   }
 
   const results = []
-
-  const PROGRESS_INTERVAL = 15
-
   for (const b of broadcasts) {
     try {
-      await updateBroadcast(b.id, { status: 'sending' })
-      console.log(`[broadcast] ${b.id}: started`)
-
-      const users = await getAllUsers()
-      let cursor = await getCursor(b.id)
-      const batchSize = 20
-      const end = Math.min(cursor + batchSize, users.length)
-
-      let sentInBatch = 0
-      let failedInBatch = 0
-      let i = cursor
-      for (; i < end; i++) {
-        const user = users[i]
-        try {
-          const alreadySent = await isSent(b.id, user.user_id)
-          if (alreadySent) {
-            cursor++
-            continue
-          }
-
-          await sendBroadcastMessage(user.user_id, b)
-          await markSent(b.id, user.user_id)
-          await markDelivered(b.id, user.user_id)
-          sentInBatch++
-          cursor++
-          await delay(BATCH_DELAY)
-        } catch (err) {
-          console.error(`[broadcast] ${b.id}: ERROR for userId=${user.user_id}: ${err.message}`)
-          await markFailed(b.id, user.user_id).catch(() => {})
-          if (err.message.includes('404') && (err.message.includes('chat.not.found') || err.message.includes('dialog.not.found'))) {
-            await markInactive(user.user_id).catch(() => {})
-            alog('INFO', 'broadcast %s: marked inactive userId=%d', b.id, user.user_id)
-          }
-          alog('INFO', 'broadcast %s: markFailed userId=%d, advancing', b.id, user.user_id)
-          failedInBatch++
-          cursor++
-          await delay(BATCH_DELAY)
-        }
-      }
-
-      if (failedInBatch) {
-        alog('WARN', 'broadcast %s: %d users failed in this batch, skipped', b.id, failedInBatch)
-      }
-      const newCursor = i
-      await setCursor(b.id, newCursor)
-
-      // Send progress report to admin periodically (edit existing, don't spam)
-      const totalAttempted = newCursor
-      if (totalAttempted > 0 && totalAttempted < users.length && totalAttempted % PROGRESS_INTERVAL < batchSize) {
-        const chainStats = await getBroadcastStats(b.id)
-        const progressPct = Math.round((totalAttempted / users.length) * 100)
-        const progressMsg = `📤 Рассылка #${b.id}: ${progressPct}%\n` +
-          `✅ Отправлено: ${chainStats.sent} / ${users.length}\n` +
-          `❌ Ошибок: ${chainStats.failed}\n` +
-          `📈 Прогресс: ${totalAttempted}/${users.length}`
-
-        // Use admin's chat_id (stored at broadcast start) — user_id != chat_id in MAX API
-        const adminChatId = b.created_by_chat_id
-        if (!adminChatId) {
-          alog('WARN', 'broadcast %s: no created_by_chat_id, skipping progress', b.id)
-        } else {
-          const existingMsgId = await getProgressMessageId(b.id)
-          if (existingMsgId) {
-            editMessage(adminChatId, existingMsgId, progressMsg).catch(e =>
-              console.warn('[broadcast] progress edit failed:', e.message)
-            )
-          } else {
-            sendMessage(adminChatId, progressMsg).then(resp => {
-              const respMid = extractMessageId(resp)
-              if (respMid != null) {
-                setProgressMessageId(b.id, respMid).catch(() => {})
-              }
-            }).catch(e =>
-              console.warn('[broadcast] progress send failed:', e.message)
-            )
-          }
-          alog('INFO', 'broadcast %s: progress %d/%d (%d%%)', b.id, totalAttempted, users.length, progressPct)
-        }
-      }
-
-      if (newCursor >= users.length) {
-        await updateBroadcast(b.id, { status: 'sent' })
-        console.log(`[broadcast] ${b.id}: completed (${users.length} users)`)
-        const chainStats = await getBroadcastStats(b.id)
-        const chainTotalUs = await getUserCount()
-        const chainOpenPct = chainStats.sent ? Math.round(chainStats.opened / chainStats.sent * 100) : 0
-        const chainUnsubPct = chainStats.sent ? Math.round(chainStats.unsubbed / chainStats.sent * 100) : 0
-        const chainSummary = `✅ Рассылка #${b.id} завершена!\n\n` +
-          `📤 Отправлено: ${chainStats.sent} / ${chainTotalUs}\n` +
-          `👁 Открыто: ${chainStats.opened} (${chainOpenPct}%)\n` +
-          `🚫 Отписалось: ${chainStats.unsubbed} (${chainUnsubPct}%)\n` +
-          `❌ Ошибок: ${chainStats.failed}`
-        const summaryChatId = b.created_by_chat_id
-        if (summaryChatId) {
-          await sendMessage(summaryChatId, chainSummary).catch(e => console.warn('[broadcast] failed to send chain summary to creator:', e.message))
-        }
-        const statusMsgId = await getStatusMessageId(b.id)
-        if (statusMsgId && summaryChatId) {
-          editMessageWithKeyboard(summaryChatId, statusMsgId,
-            `✅ Рассылка #${b.id} завершена! Отправлено ${users.length} сообщений.`,
-            [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-          ).catch(e => alog('WARN', 'broadcast %s: status screen edit failed: %s', b.id, e.message))
-        }
-        alog('INFO', 'broadcast %s: completed, stats=%j', b.id, chainStats)
-      } else {
-        console.log(`[broadcast] ${b.id}: progress ${newCursor}/${users.length}`)
-        // Если админ остановил рассылку, пока шёл батч — не возобновляем
-        const fresh = await getBroadcast(b.id)
-        if (fresh && fresh.status === 'cancelled') {
-          alog('INFO', 'broadcast %s: stopped during batch, not rescheduling', b.id)
-        } else {
-          // Set back to scheduled so next invocation picks it up
-          await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
-          // Continue with next batch
-          const host = c.req.header('host')
-          const scheme = c.req.header('x-forwarded-proto') || 'https'
-          await fetch(`${scheme}://${host}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
-            .then(r => r.json()).then(r => alog('INFO', 'broadcast %s: chain call result: %j', b.id, r))
-            .catch(e => console.warn('[broadcast] chain call failed:', e.message))
-        }
-      }
-
-      results.push({ id: b.id, sent: sentInBatch, cursor: newCursor, total: users.length })
+      const res = await processScheduledBroadcast(b, {
+        continueChain: true,
+        host: c.req.header('host'),
+        scheme: c.req.header('x-forwarded-proto') || 'https',
+        secret
+      })
+      results.push({ id: b.id, sent: res.sent ?? 0, failed: res.failed ?? 0, S: res.S ?? 0, done: !!res.done })
     } catch (err) {
       console.error(`[broadcast] ${b.id}: fatal error: ${err.message}`)
       results.push({ id: b.id, error: err.message })
@@ -1433,123 +1329,10 @@ app.get('/cron-process-broadcasts', async (c) => {
   }
 
   const results = []
-  const PROGRESS_INTERVAL = 15
-
   for (const b of broadcasts) {
     try {
-      await updateBroadcast(b.id, { status: 'sending' })
-      console.log(`[broadcast] ${b.id}: cron picked up`)
-
-      const users = await getAllUsers()
-      let cursor = await getCursor(b.id)
-      const batchSize = 20
-      const end = Math.min(cursor + batchSize, users.length)
-
-      let sentInBatch = 0
-      let failedInBatch = 0
-      let i = cursor
-      for (; i < end; i++) {
-        const user = users[i]
-        try {
-          const alreadySent = await isSent(b.id, user.user_id)
-          if (alreadySent) {
-            cursor++
-            continue
-          }
-
-          await sendBroadcastMessage(user.user_id, b)
-          await markSent(b.id, user.user_id)
-          await markDelivered(b.id, user.user_id)
-          sentInBatch++
-          cursor++
-          await delay(BATCH_DELAY)
-        } catch (err) {
-          console.error(`[broadcast] ${b.id}: ERROR for userId=${user.user_id}: ${err.message}`)
-          await markFailed(b.id, user.user_id).catch(() => {})
-          if (err.message.includes('404') && (err.message.includes('chat.not.found') || err.message.includes('dialog.not.found'))) {
-            await markInactive(user.user_id).catch(() => {})
-            alog('INFO', 'broadcast %s: marked inactive userId=%d', b.id, user.user_id)
-          }
-          alog('INFO', 'broadcast %s: markFailed userId=%d, advancing', b.id, user.user_id)
-          failedInBatch++
-          cursor++
-          await delay(BATCH_DELAY)
-        }
-      }
-
-      if (failedInBatch) {
-        alog('WARN', 'broadcast %s: %d users failed in this batch, skipped', b.id, failedInBatch)
-      }
-      const newCursor = i
-      await setCursor(b.id, newCursor)
-
-      // Progress report to admin (edit existing, don't spam)
-      const totalAttempted = newCursor
-      if (totalAttempted > 0 && totalAttempted < users.length && totalAttempted % PROGRESS_INTERVAL < batchSize) {
-        const cStats = await getBroadcastStats(b.id)
-        const pct = Math.round((totalAttempted / users.length) * 100)
-        const msg = `📤 Рассылка #${b.id}: ${pct}%\n` +
-          `✅ Отправлено: ${cStats.sent} / ${users.length}\n` +
-          `❌ Ошибок: ${cStats.failed}\n` +
-          `📈 Прогресс: ${totalAttempted}/${users.length}`
-
-        const adminChatId = b.created_by_chat_id
-        if (!adminChatId) {
-          alog('WARN', 'broadcast %s: no created_by_chat_id, skipping cron progress', b.id)
-        } else {
-          const existingMsgId = await getProgressMessageId(b.id)
-          if (existingMsgId) {
-            editMessage(adminChatId, existingMsgId, msg).catch(e =>
-              console.warn('[broadcast] cron progress edit failed:', e.message)
-            )
-          } else {
-            sendMessage(adminChatId, msg).then(resp => {
-              const respMid = extractMessageId(resp)
-              if (respMid != null) {
-                setProgressMessageId(b.id, respMid).catch(() => {})
-              }
-            }).catch(e =>
-              console.warn('[broadcast] cron progress send failed:', e.message)
-            )
-          }
-        }
-      }
-
-      if (newCursor >= users.length) {
-        await updateBroadcast(b.id, { status: 'sent' })
-        console.log(`[broadcast] ${b.id}: completed (${users.length} users)`)
-        const cStats = await getBroadcastStats(b.id)
-        const cTotal = await getUserCount()
-        const openPct = cStats.sent ? Math.round(cStats.opened / cStats.sent * 100) : 0
-        const unsubPct = cStats.sent ? Math.round(cStats.unsubbed / cStats.sent * 100) : 0
-        const summary = `✅ Рассылка #${b.id} завершена!\n\n` +
-          `📤 Отправлено: ${cStats.sent} / ${cTotal}\n` +
-          `👁 Открыто: ${cStats.opened} (${openPct}%)\n` +
-          `🚫 Отписалось: ${cStats.unsubbed} (${unsubPct}%)\n` +
-          `❌ Ошибок: ${cStats.failed}`
-        const summaryChatId = b.created_by_chat_id
-        if (summaryChatId) {
-          await sendMessage(summaryChatId, summary).catch(e => console.warn('[broadcast] cron summary send failed:', e.message))
-        }
-        const statusMsgId = await getStatusMessageId(b.id)
-        if (statusMsgId && summaryChatId) {
-          editMessageWithKeyboard(summaryChatId, statusMsgId,
-            `✅ Рассылка #${b.id} завершена! Отправлено ${users.length} сообщений.`,
-            [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-          ).catch(e => alog('WARN', 'broadcast %s: cron status screen edit failed: %s', b.id, e.message))
-        }
-      } else {
-        console.log(`[broadcast] ${b.id}: cron progress ${newCursor}/${users.length}`)
-        // Если админ остановил рассылку, пока шёл батч — не возобновляем
-        const fresh = await getBroadcast(b.id)
-        if (fresh && fresh.status === 'cancelled') {
-          alog('INFO', 'broadcast %s: stopped during batch, not rescheduling', b.id)
-        } else {
-          await updateBroadcast(b.id, { status: 'scheduled', scheduled_at: Date.now() + 1000 })
-        }
-      }
-
-      results.push({ id: b.id, sent: sentInBatch, cursor: newCursor, total: users.length })
+      const res = await processScheduledBroadcast(b)
+      results.push({ id: b.id, sent: res.sent ?? 0, failed: res.failed ?? 0, S: res.S ?? 0, done: !!res.done })
     } catch (err) {
       console.error(`[broadcast] ${b.id}: cron fatal error: ${err.message}`)
       results.push({ id: b.id, error: err.message })

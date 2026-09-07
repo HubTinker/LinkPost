@@ -19,8 +19,7 @@ global.fetch = async (url, opts) => {
 
 const { kv } = await import('../lib/kv-mock.js')
 const {
-  createBroadcast, getBroadcast, getBroadcastStats, updateBroadcast,
-  markSent, resetBroadcastStats
+  createBroadcast, getBroadcast, getBroadcastStats, updateBroadcast, markSent
 } = await import('../lib/broadcast.js')
 const { handleMessage, handleBotStarted } = await import('../api/index.js')
 const { setLink: setLinkFromStorage } = await import('../lib/storage.js')
@@ -1364,8 +1363,8 @@ describe('broadcast status screen', () => {
     assert.strictEqual(await kv.get(`broadcast:${b.id}:status_msg`), 90)
     assert.strictEqual(await kv.get(`broadcast:${b.id}:progress_msg`), 999, 'progress message id stored from mid')
     // summary не должен уходить (рассылка не завершена);
-    // прогресс-сообщение (содержит «Прогресс:») — не summary, исключаем из подсчёта
-    assert.equal(fetchCalls.filter(c => c.body?.text?.includes('Отправлено:') && !c.body?.text?.includes('Прогресс:')).length, 0)
+    // итог теперь в формате «Получили:» (finalizeBroadcast); прогресс — «Получили всего:»/«Прогресс:» — не summary
+    assert.equal(fetchCalls.filter(c => c.body?.text?.includes('Получили:') && !c.body?.text?.includes('Прогресс:')).length, 0)
   })
 
   it('should not save status_message_id when first batch completes', async () => {
@@ -1406,7 +1405,7 @@ describe('broadcast status screen', () => {
       const statusEdit = fetchCalls.find(c => c.url?.includes('message_id=90') && c.method === 'PUT')
       assert.ok(statusEdit, 'status screen should be edited on completion')
       assert.ok(statusEdit.body.text.includes('завершена'), 'completion text expected')
-      const summary = fetchCalls.find(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id') && c.body?.text?.includes('Отправлено:'))
+      const summary = fetchCalls.find(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id') && c.body?.text?.includes('Получили:'))
       assert.ok(summary, 'summary should be sent as new message')
     } finally {
       delete process.env.SETUP_SECRET
@@ -1428,7 +1427,7 @@ describe('broadcast status screen', () => {
 
       const navEdits = fetchCalls.filter(c => c.url?.includes('message_id=999') && c.method === 'PUT')
       assert.equal(navEdits.length, 0, 'nav_msg must not be used for completion')
-      const summary = fetchCalls.find(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id') && c.body?.text?.includes('Отправлено:'))
+      const summary = fetchCalls.find(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id') && c.body?.text?.includes('Получили:'))
       assert.ok(summary, 'summary still sent')
     } finally {
       delete process.env.SETUP_SECRET
