@@ -19,12 +19,26 @@ global.fetch = async (url, opts) => {
 
 const { kv } = await import('../lib/kv-mock.js')
 const {
-  createBroadcast, getBroadcast, getBroadcastStats, getCursor, updateBroadcast,
-  markSent, markFailed, setCursor, resetBroadcastStats
+  createBroadcast, getBroadcast, getBroadcastStats, updateBroadcast,
+  markSent, resetBroadcastStats
 } = await import('../lib/broadcast.js')
 const { handleMessage, handleBotStarted } = await import('../api/index.js')
 const { setLink: setLinkFromStorage } = await import('../lib/storage.js')
 const { daysAgo } = await import('../lib/storage.js')
+
+// Заполняет базу пользователей: либо числом n (создаёт 1..n — legacy форма),
+// либо массивом { id } (тесты экрана получателей).
+async function seedUsers (specs) {
+  if (typeof specs === 'number') {
+    const n = specs
+    specs = []
+    for (let i = 1; i <= n; i++) specs.push({ id: i })
+  }
+  for (const s of specs) {
+    await kv.sadd('users_all', String(s.id))
+    await kv.set(`user:${s.id}`, { user_id: s.id, name: `U${s.id}` })
+  }
+}
 
 describe('handleMessage guard', () => {
   beforeEach(() => {
@@ -1087,48 +1101,98 @@ describe('broadcast_test callback', () => {
   })
 })
 
-describe('broadcast_restart callback', () => {
+describe('broadcast recipients flow', () => {
   beforeEach(() => {
     fetchCalls = []
     kv._clear()
   })
 
-  it('should reset stats and show confirmation screen', async () => {
-    const b = await createBroadcast({ text: 'Restart me', created_by: 123 })
-    await markSent(b.id, 100)
-    await markFailed(b.id, 200)
-    await setCursor(b.id, 15)
-
+  it('should show recipient counts and preset buttons', async () => {
+    await seedUsers([{ id: 1 }, { id: 2 }])
+    const b = await createBroadcast({ text: 'Wave', created_by: 123 })
     await handleCallbackQuery({
-      callback: { payload: `broadcast_restart:${b.id}`, user: { user_id: 123 } },
-      message: { recipient: { chat_id: 1 } }
+      callback: { payload: `broadcast_recipients:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
     })
-
-    const stats = await getBroadcastStats(b.id)
-    assert.strictEqual(stats.sent, 0, 'sent should be reset')
-    assert.strictEqual(stats.failed, 0, 'failed should be reset')
-
-    const cursor = await getCursor(b.id)
-    assert.strictEqual(cursor, 0, 'cursor should be reset')
-
-    const updated = await getBroadcast(b.id)
-    assert.strictEqual(updated.status, 'draft', 'status should be draft')
-
-    const responseCall = fetchCalls.find(c => c.body?.text?.includes('Отправить сейчас'))
-    assert.ok(responseCall, 'should show send confirmation')
+    const screen = fetchCalls.find(c => c.method === 'PUT' && c.url.includes('message_id=90'))
+    assert.ok(screen?.body?.text?.includes('Кому отправляем?'))
+    assert.ok(screen.body.text.includes('📭 Ещё не получали: 2'))
   })
 
-  it('should show error for nonexistent broadcast', async () => {
+  it('should block start when no eligible recipients', async () => {
+    await seedUsers([{ id: 1 }])
+    const b = await createBroadcast({ text: 'Wave', created_by: 123 })
+    await markSent(b.id, 1)
     await handleCallbackQuery({
-      callback: { payload: 'broadcast_restart:nonexistent', user: { user_id: 123 } },
-      message: { recipient: { chat_id: 1 } }
+      callback: { payload: `broadcast_recipients:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
     })
-    const responseCall = fetchCalls.find(c => c.body?.text?.includes('не найдена'))
-    assert.ok(responseCall, 'should show not found error')
+    const screen = fetchCalls.find(c => c.method === 'PUT' && c.url.includes('message_id=90'))
+    assert.ok(screen?.body?.text?.includes('Нет новых получателей'))
+  })
+
+  it('should start limited run from preset and not over-send', async () => {
+    await seedUsers([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }])
+    const b = await createBroadcast({ text: 'Wave', created_by: 123 })
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_go:${b.id}:2`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+    })
+    const sentTo = fetchCalls.filter(c => c.url.includes('/messages?user_id=')).map(c => c.url.split('user_id=')[1])
+    assert.deepStrictEqual(sentTo, ['1', '2'])
+    const done = fetchCalls.find(c => c.method === 'PUT' && c.url.includes('message_id=90'))
+    assert.ok(done?.body?.text?.includes('завершена'))
+  })
+
+  it('should refuse start while broadcast is sending', async () => {
+    const b = await createBroadcast({ text: 'Busy', created_by: 123 })
+    await updateBroadcast(b.id, { status: 'sending' })
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_go:${b.id}:100`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+    })
+    const msg = fetchCalls.find(c => c.body?.text?.includes('Сначала остановите'))
+    assert.ok(msg, 'busy guard message expected')
+  })
+
+  it('should accept custom number for a SENT broadcast (regression: intercept outside draft)', async () => {
+    await seedUsers([{ id: 1 }, { id: 2 }])
+    const b = await createBroadcast({ text: 'Repeat', created_by: 123 })
+    await markSent(b.id, 1)
+    await updateBroadcast(b.id, { status: 'sent' })
+    // «Разослать ещё» → «Свой вариант»
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_custom:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+    })
+    const prompt = fetchCalls.find(c => c.body?.text?.includes('Введите число получателей'))
+    assert.ok(prompt, 'custom prompt expected')
+    // ввод числа текстом — перехват вне ветки черновика
+    await handleMessage({ chat_id: 1, message: { body: { text: '1' } }, user: { user_id: 123 } })
+    const sentTo = fetchCalls.filter(c => c.url.includes('/messages?user_id=')).map(c => c.url.split('user_id=')[1])
+    assert.deepStrictEqual(sentTo, ['2'], 'only never-sent user should receive')
+    const fresh = await getBroadcast(b.id)
+    assert.strictEqual(fresh._awaiting_limit, false)
+    assert.strictEqual(fresh.limit, 1)
+  })
+
+  it('should reject invalid custom number and keep flag', async () => {
+    await seedUsers([{ id: 1 }])
+    const b = await createBroadcast({ text: 'Bad', created_by: 123 })
+    await handleCallbackQuery({
+      callback: { payload: `broadcast_custom:${b.id}`, user: { user_id: 123 } },
+      message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
+    })
+    await handleMessage({ chat_id: 1, message: { body: { text: 'abc' } }, user: { user_id: 123 } })
+    const warn = fetchCalls.find(c => c.body?.text?.includes('Введите число от 1 до 10000'))
+    assert.ok(warn)
+    assert.strictEqual((await getBroadcast(b.id))._awaiting_limit, true)
+    await handleMessage({ chat_id: 1, message: { body: { text: '0' } }, user: { user_id: 123 } })
+    assert.strictEqual((await getBroadcast(b.id))._awaiting_limit, true)
   })
 })
 
-describe('broadcast_confirm_now flow', () => {
+describe('broadcast go_all flow', () => {
   beforeEach(() => {
     fetchCalls = []
     kv._clear()
@@ -1143,7 +1207,7 @@ describe('broadcast_confirm_now flow', () => {
     const b = await createBroadcast({ text: 'Hi everyone', created_by: 123 })
 
     await handleCallbackQuery({
-      callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
+      callback: { payload: `broadcast_go_all:${b.id}`, user: { user_id: 123 } },
       message: { recipient: { chat_id: 1 } }
     })
 
@@ -1171,7 +1235,7 @@ describe('broadcast_confirm_now flow', () => {
 
     try {
       await handleCallbackQuery({
-        callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
+        callback: { payload: `broadcast_go_all:${b.id}`, user: { user_id: 123 } },
         message: { recipient: { chat_id: 1 } }
       })
     } finally {
@@ -1281,22 +1345,15 @@ describe('broadcast status screen', () => {
     kv._clear()
   })
 
-  // batchSize в broadcast_confirm_now (api/index.js) = 20 — предположение теста должно быть явным
+  // batchSize в runBroadcastBatch (lib/broadcast-runner.js) = 20 — предположение теста должно быть явным
   const BATCH_SIZE = 20
-
-  async function seedUsers (n) {
-    for (let i = 1; i <= n; i++) {
-      await kv.sadd('users_all', String(i))
-      await kv.set(`user:${i}`, { user_id: i, name: `U${i}` })
-    }
-  }
 
   it('should save status_message_id when first batch does not complete', async () => {
     // BATCH_SIZE + 1 пользователь: первый батч = BATCH_SIZE, рассылка продолжается
     await seedUsers(BATCH_SIZE + 1)
     const b = await createBroadcast({ text: 'Launch', created_by: 123 })
     await handleCallbackQuery({
-      callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
+      callback: { payload: `broadcast_go_all:${b.id}`, user: { user_id: 123 } },
       message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
     })
     // Экран «запущена» отредактирован на месте (message_id=90)
@@ -1316,15 +1373,16 @@ describe('broadcast status screen', () => {
     await seedUsers(BATCH_SIZE - 1)
     const b = await createBroadcast({ text: 'Short', created_by: 123 })
     await handleCallbackQuery({
-      callback: { payload: `broadcast_confirm_now:${b.id}`, user: { user_id: 123 } },
+      callback: { payload: `broadcast_go_all:${b.id}`, user: { user_id: 123 } },
       message: { recipient: { chat_id: 1 }, body: { mid: 90 } }
     })
     assert.strictEqual(await kv.get(`broadcast:${b.id}:status_msg`), null, 'no status id on immediate completion')
     const done = fetchCalls.find(c => c.url?.includes('message_id=90') && c.method === 'PUT')
     assert.ok(done, 'completion screen should be edited in place')
     assert.ok(done.body.text.includes('завершена'), 'completion text expected')
-    // summary — отдельное новое сообщение (прогресс-сообщения исключаем: они содержат «Прогресс:»)
-    const summaries = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id') && c.body?.text?.includes('Отправлено:') && !c.body?.text?.includes('Прогресс:'))
+    // summary — отдельное новое сообщение (прогресс-сообщения исключаем: они содержат «Прогресс:»);
+    // движок (Task 2) шлёт итог в формате «Получили:» (finalizeBroadcast), а не «Отправлено:»
+    const summaries = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id') && c.body?.text?.includes('Получили:') && !c.body?.text?.includes('Прогресс:'))
     assert.equal(summaries.length, 1, 'summary should be one new message')
     // отдельного короткого «завершена»-сообщения больше нет
     const extraDone = fetchCalls.filter(c => c.url?.includes('chat_id=1') && !c.url.includes('message_id') && c.body?.text?.includes('сообщений'))

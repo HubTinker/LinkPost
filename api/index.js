@@ -21,10 +21,12 @@ import {
   createBroadcast, getBroadcast, updateBroadcast, deleteBroadcast,
   getAllBroadcasts, getScheduledBroadcasts,
   markSent, markDelivered, markOpened, markUnsubbed, markFailed,
-  getBroadcastStats, getCursor, setCursor, isSent, resetBroadcastStats,
+  getBroadcastStats, getCursor, setCursor, isSent,
   setProgressMessageId, getProgressMessageId,
-  setStatusMessageId, getStatusMessageId
+  setStatusMessageId, getStatusMessageId,
+  clearRunAttempted
 } from '../lib/broadcast.js'
+import { runBroadcastBatch, getEligibleUsers, getRunSentCount, getRecipientCounts } from '../lib/broadcast-runner.js'
 
 const app = new Hono()
 
@@ -259,6 +261,105 @@ async function getActiveDraft (userId) {
   }
 }
 
+/** Рассылка админа, ожидающая ввода числа получателей («Свой вариант») */
+async function getAwaitingLimitBroadcast (userId) {
+  try {
+    const all = await getAllBroadcasts()
+    return all.find(b => b._awaiting_limit && b.created_by === userId) || null
+  } catch {
+    return null
+  }
+}
+
+/** Старт нового запуска: лимит, точка отсчёта, сброс run-состояния (единственная точка). */
+async function startBroadcastRun (bid, limit, chatId) {
+  const b = await getBroadcast(bid)
+  if (!b) return { error: 'not_found' }
+  if (!['draft', 'sent', 'cancelled'].includes(b.status)) return { error: 'busy' }
+  const stats = await getBroadcastStats(bid)
+  await updateBroadcast(bid, {
+    status: 'scheduled',
+    scheduled_at: Date.now(),
+    created_by_chat_id: chatId,
+    limit,
+    _awaiting_limit: false,
+    _run_sent_at_start: stats.sent
+  })
+  await clearRunAttempted(bid)
+  return { ok: true }
+}
+
+/** Экран «Кому отправляем?» */
+async function showRecipientsScreen (chatId, editMsgId, b) {
+  await updateBroadcast(b.id, { _awaiting_limit: false })
+  const counts = await getRecipientCounts(b)
+  if (counts.eligible === 0) {
+    return renderScreen({ chatId, editMsgId, text:
+      '📭 Нет новых получателей — все уже получили эту рассылку.',
+      buttons: [[{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${b.id}` }]]
+    })
+  }
+  return renderScreen({ chatId, editMsgId, text:
+    formatBroadcastPreview(b) + '\n\n' +
+    `👥 Уже получили: ${counts.sent}\n` +
+    `📭 Ещё не получали: ${counts.eligible}\n` +
+    `🚫 Неактивных: ${counts.inactive}\n\n` +
+    'Кому отправляем?',
+    buttons: [
+      [
+        { type: 'callback', text: '100', data: `broadcast_go:${b.id}:100` },
+        { type: 'callback', text: '200', data: `broadcast_go:${b.id}:200` }
+      ],
+      [
+        { type: 'callback', text: '500', data: `broadcast_go:${b.id}:500` },
+        { type: 'callback', text: '1000', data: `broadcast_go:${b.id}:1000` }
+      ],
+      [
+        { type: 'callback', text: '✏️ Свой вариант', data: `broadcast_custom:${b.id}` },
+        { type: 'callback', text: '👥 Всем', data: `broadcast_go_all:${b.id}` }
+      ],
+      [{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${b.id}` }]
+    ]
+  })
+}
+
+/** Запуск рассылки: первый батч инлайн, экран «запущена»/«завершена», цепочка. */
+async function launchBroadcast (chatId, editMsgId, bid) {
+  const res = await runBroadcastBatch(bid)
+  if (res.error === 'not_found') return sendMessage(chatId, '❌ Рассылка не найдена.')
+  if (res.stopped) {
+    return renderScreen({ chatId, editMsgId, text:
+      '⏸ Рассылка была остановлена — отправка не продолжена.',
+      buttons: [[{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]]
+    })
+  }
+  if (res.done) {
+    const stats = await getBroadcastStats(bid)
+    return renderScreen({ chatId, editMsgId, text:
+      `✅ Рассылка #${bid} завершена! Получили: ${stats.sent}.`,
+      buttons: [[{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]]
+    })
+  }
+  const launched = await renderScreen({ chatId, editMsgId, text:
+    `📤 Рассылка #${bid} запущена! Отправлено ${res.S} из ${res.limit == null ? 'всех' : res.limit}.\n` +
+    'ℹ️ Прогресс будет приходить каждые 15 сообщений.',
+    buttons: [[{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]]
+  })
+  if (launched?.message_id) {
+    try {
+      await setStatusMessageId(bid, launched.message_id)
+    } catch (e) {
+      alog('WARN', 'broadcast %s: failed to save status message id: %s', bid, e.message)
+    }
+  }
+  const secret = process.env.SETUP_SECRET
+  if (secret) {
+    await fetch(`${APP_BASE_URL}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
+      .then(r => r.json()).then(r => alog('INFO', 'broadcast %s: chain call result: %j', bid, r))
+      .catch(e => console.warn('[broadcast] chain call failed:', e.message))
+  }
+}
+
 async function handleBotStarted (update) {
   const { chat_id, user, payload } = update
 
@@ -466,8 +567,21 @@ async function handleMessage (update) {
     return sendMessage(chat_id, msg)
   }
 
-  // Broadcast draft flow (admin only)
+  // Broadcast flow (admin only)
   if (isAdmin(userId)) {
+    // «Свой вариант»: число перехватывается у любой рассылки админа (не только черновика)
+    const awaiting = await getAwaitingLimitBroadcast(userId)
+    if (awaiting) {
+      const n = /^\d+$/.test(text) ? Number(text) : 0
+      if (n >= 1 && n <= 10000) {
+        const res = await startBroadcastRun(awaiting.id, n, chat_id)
+        if (res.error === 'busy') return sendMessage(chat_id, '⚠️ Сначала остановите текущую отправку.')
+        if (res.error) return sendMessage(chat_id, '❌ Рассылка не найдена.')
+        return launchBroadcast(chat_id, null, awaiting.id)
+      }
+      return sendMessage(chat_id, '⚠️ Введите число от 1 до 10000.')
+    }
+
     const draft = await getActiveDraft(userId)
     if (draft) {
       // Step 1: collecting text
@@ -533,7 +647,7 @@ async function handleMessage (update) {
         return sendMessageWithKeyboard(chat_id,
           formatBroadcastPreview(updated) + '\n\nОтправить сейчас?',
           [
-            [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${draft.id}` }],
+            [{ type: 'callback', text: '👥 Кому отправляем', data: `broadcast_recipients:${draft.id}` }],
             [{ type: 'callback', text: '🔍 Тест', data: `broadcast_test:${draft.id}` }],
             [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
           ]
@@ -816,7 +930,7 @@ async function handleCallbackQuery (update) {
     return renderScreen({ chatId, editMsgId, text:
       formatBroadcastPreview(b) + '\n\nОтправить сейчас?',
       buttons: [
-        [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${bid}` }],
+        [{ type: 'callback', text: '👥 Кому отправляем', data: `broadcast_recipients:${bid}` }],
         [{ type: 'callback', text: '🔍 Тест', data: `broadcast_test:${bid}` }],
         [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
       ]
@@ -841,163 +955,47 @@ async function handleCallbackQuery (update) {
     }
   }
 
-  if (cb.payload.startsWith('broadcast_restart:')) {
-    const bid = cb.payload.slice('broadcast_restart:'.length)
+  if (cb.payload.startsWith('broadcast_recipients:')) {
+    const bid = cb.payload.slice('broadcast_recipients:'.length)
     const b = await getBroadcast(bid)
     if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
-
-    let msg
-    await updateBroadcast(bid, { status: 'draft', scheduled_at: null })
-    if (b.status === 'scheduled' || b.status === 'sending') {
-      alog('INFO', 'broadcast %s: status → draft, stats preserved', bid)
-      msg = formatBroadcastPreview(b) + '\n\n📊 Статистика сохранена. При отправке пропустит уже доставленных.'
-    } else {
-      await resetBroadcastStats(bid)
-      alog('INFO', 'broadcast %s: stats reset, status → draft', bid)
-      msg = formatBroadcastPreview(b) + '\n\n📊 Статистика сброшена. Отправить сейчас?'
-    }
-
-    return renderScreen({ chatId, editMsgId, text: msg, buttons: [
-      [{ type: 'callback', text: '✅ Отправить', data: `broadcast_confirm_now:${bid}` }],
-      [{ type: 'callback', text: '✏️ Редактировать', data: `broadcast_edit:${bid}` }],
-      [{ type: 'callback', text: '🔍 Тест', data: `broadcast_test:${bid}` }],
-      [{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]
-    ] })
+    return showRecipientsScreen(chatId, editMsgId, b)
   }
 
-  if (cb.payload.startsWith('broadcast_confirm_now:')) {
-    const bid = cb.payload.slice('broadcast_confirm_now:'.length)
+  if (cb.payload.startsWith('broadcast_go:')) {
+    const rest = cb.payload.slice('broadcast_go:'.length)
+    const [bid, nStr] = rest.split(':')
+    if (!bid || !nStr) return sendMessage(chatId, '❌ Неверный выбор.')
+    const n = Number(nStr)
+    const res = await startBroadcastRun(bid, Number.isFinite(n) && n >= 1 ? Math.floor(n) : null, chatId)
+    if (res.error === 'busy') return sendMessage(chatId, '⚠️ Сначала остановите текущую отправку.')
+    if (res.error) return sendMessage(chatId, '❌ Рассылка не найдена.')
+    return launchBroadcast(chatId, editMsgId, bid)
+  }
+
+  if (cb.payload.startsWith('broadcast_go_all:')) {
+    const bid = cb.payload.slice('broadcast_go_all:'.length)
+    const res = await startBroadcastRun(bid, null, chatId)
+    if (res.error === 'busy') return sendMessage(chatId, '⚠️ Сначала остановите текущую отправку.')
+    if (res.error) return sendMessage(chatId, '❌ Рассылка не найдена.')
+    return launchBroadcast(chatId, editMsgId, bid)
+  }
+
+  if (cb.payload.startsWith('broadcast_custom:')) {
+    const bid = cb.payload.slice('broadcast_custom:'.length)
     const b = await getBroadcast(bid)
     if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
-
-    await updateBroadcast(bid, { status: 'scheduled', scheduled_at: Date.now(), created_by_chat_id: chatId })
-    alog('DEBUG', 'broadcast_confirm_now: starting broadcast %s', bid)
-
-    // Send first batch inline
-    const users = await getAllUsers()
-    let cursor = await getCursor(bid)
-    const batchSize = 20
-    const end = Math.min(cursor + batchSize, users.length)
-    let sent = 0
-    let failed = 0
-    let totalAttempted = cursor
-    let i = cursor
-
-    // Progress reporting config
-    const PROGRESS_INTERVAL = 15
-    let nextProgressAt = cursor + PROGRESS_INTERVAL
-
-    for (; i < end; i++) {
-      const user = users[i]
-      try {
-        const alreadySent = await isSent(bid, user.user_id)
-        if (alreadySent) { cursor++; continue }
-        await sendBroadcastMessage(user.user_id, b)
-        await markSent(bid, user.user_id)
-        await markDelivered(bid, user.user_id)
-        sent++
-        cursor++
-        await delay(BATCH_DELAY)
-      } catch (err) {
-        console.error(`[broadcast] ${bid}: ERROR for userId=${user.user_id}: ${err.message}`)
-        await markFailed(bid, user.user_id).catch(() => {})
-        if (err.message.includes('404') && (err.message.includes('chat.not.found') || err.message.includes('dialog.not.found'))) {
-          await markInactive(user.user_id).catch(() => {})
-          alog('INFO', 'broadcast %s: marked inactive userId=%d', bid, user.user_id)
-        }
-        alog('INFO', 'broadcast %s: markFailed userId=%d, advancing', bid, user.user_id)
-        failed++
-        cursor++
-        await delay(BATCH_DELAY)
-      }
-
-      totalAttempted = i + 1
-
-      // Progress update to admin every PROGRESS_INTERVAL users (edit in place)
-      if (totalAttempted >= nextProgressAt && totalAttempted < users.length) {
-        nextProgressAt = totalAttempted + PROGRESS_INTERVAL
-        const statsSoFar = await getBroadcastStats(bid)
-        const progressPct = Math.round((totalAttempted / users.length) * 100)
-        const progressMsg = `📤 Рассылка #${bid}: ${progressPct}%\n` +
-          `✅ Отправлено: ${statsSoFar.sent} / ${users.length}\n` +
-          `❌ Ошибок: ${statsSoFar.failed}\n` +
-          `📈 Прогресс: ${totalAttempted}/${users.length}`
-
-        // Use admin's real chat_id (not user_id) — MAX API needs chat_id for sendMessage
-        const adminChatId = chatId
-        const existingMsgId = await getProgressMessageId(bid)
-        if (existingMsgId) {
-          editMessage(adminChatId, existingMsgId, progressMsg).catch(e =>
-            console.warn('[broadcast] progress edit failed:', e.message)
-          )
-        } else {
-          sendMessage(adminChatId, progressMsg).then(resp => {
-            const respMid = extractMessageId(resp)
-            if (respMid != null) {
-              setProgressMessageId(bid, respMid).catch(() => {})
-            }
-          }).catch(e =>
-            console.warn('[broadcast] progress send failed:', e.message)
-          )
-        }
-        alog('INFO', 'broadcast %s: progress %d/%d (%d%%)', bid, totalAttempted, users.length, progressPct)
+    const all = await getAllBroadcasts()
+    for (const other of all) {
+      if (other._awaiting_limit && other.id !== bid) {
+        await updateBroadcast(other.id, { _awaiting_limit: false }).catch(() => {})
       }
     }
-
-    if (failed) {
-      alog('WARN', 'broadcast %s: %d users failed in this batch, skipped', bid, failed)
-    }
-    cursor = i
-    await setCursor(bid, cursor)
-
-    if (cursor >= users.length) {
-      await updateBroadcast(bid, { status: 'sent' })
-      console.log(`[broadcast] ${bid}: completed (${users.length} users)`)
-      const finalStats = await getBroadcastStats(bid)
-      const totalUs = await getUserCount()
-      const openPct = finalStats.sent ? Math.round(finalStats.opened / finalStats.sent * 100) : 0
-      const unsubPct = finalStats.sent ? Math.round(finalStats.unsubbed / finalStats.sent * 100) : 0
-      const summaryMsg = `✅ Рассылка #${bid} завершена!\n\n` +
-        `📤 Отправлено: ${finalStats.sent} / ${totalUs}\n` +
-        `👁 Открыто: ${finalStats.opened} (${openPct}%)\n` +
-        `🚫 Отписалось: ${finalStats.unsubbed} (${unsubPct}%)\n` +
-        `❌ Ошибок: ${finalStats.failed}`
-      await sendMessage(chatId, summaryMsg).catch(e => console.warn('[broadcast] failed to send summary to creator:', e.message))
-      alog('INFO', 'broadcast %s: sent summary, stats=%j', bid, finalStats)
-      // Мгновенное завершение: status_message_id НЕ создаётся, экран подтверждения
-      // сразу редактируется в финальный (спека §6.1)
-      return renderScreen({
-        chatId,
-        editMsgId,
-        text: `✅ Рассылка #${bid} завершена! Отправлено ${cursor} сообщений.`,
-        buttons: [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
-      })
-    }
-
-    // Экран «запущена» — правка на месте; статусный id сохраняется ДО запуска цепочки (спека §6.1)
-    const launched = await renderScreen({
-      chatId,
-      editMsgId,
-      text: `📤 Рассылка #${bid} запущена! Отправлено ${sent} из ${users.length}. Продолжаю...` +
-        `\nℹ️ Прогресс будет приходить каждые ${PROGRESS_INTERVAL} сообщений.`,
-      buttons: [[{ type: 'callback', text: '🔙 Назад', data: 'broadcast_menu' }]]
+    await updateBroadcast(bid, { _awaiting_limit: true })
+    return renderScreen({ chatId, editMsgId, text:
+      '✏️ Введите число получателей (1–10000):',
+      buttons: [[{ type: 'callback', text: '🔙 Назад', data: `broadcast_view:${bid}` }]]
     })
-    if (launched?.message_id) {
-      try {
-        await setStatusMessageId(bid, launched.message_id)
-      } catch (e) {
-        alog('WARN', 'broadcast %s: failed to save status message id: %s', bid, e.message)
-      }
-    }
-
-    const secret = process.env.SETUP_SECRET
-    const chainPromise = secret
-      ? fetch(`${APP_BASE_URL}/process-broadcasts?secret=${encodeURIComponent(secret)}`)
-          .then(r => r.json()).then(r => alog('INFO', 'broadcast %s: chain call result: %j', bid, r))
-          .catch(e => console.warn('[broadcast] chain call failed:', e.message))
-      : Promise.resolve()
-
-    await chainPromise
   }
 
   if (cb.payload === 'broadcast_list') {
@@ -1016,39 +1014,41 @@ async function handleCallbackQuery (update) {
 
   if (cb.payload.startsWith('broadcast_view:')) {
     const bid = cb.payload.slice('broadcast_view:'.length)
-    const b = await getBroadcast(bid)
+    let b = await getBroadcast(bid)
     if (!b) return sendMessage(chatId, '❌ Рассылка не найдена.')
+    if (b._awaiting_limit) {
+      await updateBroadcast(bid, { _awaiting_limit: false })
+      b = await getBroadcast(bid)
+    }
 
     let detail = formatBroadcastDetail(b)
     if (b.status === 'scheduled' || b.status === 'sending') {
-      const cursor = await getCursor(bid)
-      const totalUsers = await getUserCount()
       const stats = await getBroadcastStats(bid)
-      const pct = totalUsers > 0 ? Math.round((cursor / totalUsers) * 100) : 0
-      detail += `📤 Прогресс: ${cursor} / ${totalUsers} (${pct}%)\n`
-      detail += `✅ Отправлено: ${stats.sent} | ❌ Ошибок: ${stats.failed}\n`
-      if (stats.opened > 0) {
-        detail += `👁 Открыто: ${stats.opened}\n`
-      }
+      const S = getRunSentCount(b, stats.sent)
+      const eligible = await getEligibleUsers(b)
+      detail += b.limit == null
+        ? `📤 Запуск: ${S} из ${eligible.length}\n`
+        : `📤 Запуск: ${S} / ${b.limit}\n`
+      detail += `✅ Получили всего: ${stats.sent} | ❌ Ошибок: ${stats.failed}\n`
     }
 
     const btnRows = []
     if (b.status === 'draft') {
       btnRows.push([{ type: 'callback', text: '✏️ Редактировать', data: `broadcast_edit:${bid}` }])
-      btnRows.push([{ type: 'callback', text: '▶️ Запустить', data: `broadcast_confirm_now:${bid}` }])
+      btnRows.push([{ type: 'callback', text: '▶️ Запустить', data: `broadcast_recipients:${bid}` }])
     }
     if (b.status === 'scheduled' || b.status === 'sending') {
       btnRows.push([{ type: 'callback', text: '⏸ Остановить', data: `broadcast_stop:${bid}` }])
-      btnRows.push([{ type: 'callback', text: '🔄 Перезапустить', data: `broadcast_restart:${bid}` }])
-    }
-    if (b.status === 'sent' || b.status === 'cancelled') {
-      btnRows.push([{ type: 'callback', text: '🔄 Перезапустить', data: `broadcast_restart:${bid}` }])
     }
     if (b.status === 'cancelled') {
       btnRows.push([{ type: 'callback', text: '▶️ Возобновить', data: `broadcast_resume:${bid}` }])
+      btnRows.push([{ type: 'callback', text: '📤 Разослать ещё', data: `broadcast_recipients:${bid}` }])
+    }
+    if (b.status === 'sent') {
+      btnRows.push([{ type: 'callback', text: '📤 Разослать ещё', data: `broadcast_recipients:${bid}` }])
     }
     btnRows.push([{ type: 'callback', text: '📊 Статистика', data: `broadcast_stats:${bid}` }])
-    btnRows.push([{ type: 'callback', text: '❌ Удалить', data: `broadcast_delete:${bid}` }])
+    btnRows.push([{ type: 'callback', text: '🗑 Удалить', data: `broadcast_delete:${bid}` }])
     btnRows.push([{ type: 'callback', text: '🔙 К списку', data: 'broadcast_list' }])
 
     return renderScreen({ chatId, editMsgId, text: detail, buttons: btnRows })
@@ -1069,6 +1069,7 @@ async function handleCallbackQuery (update) {
     if (b.scheduled_at) msg += `🕐 Запланирована: ${new Date(b.scheduled_at).toLocaleString('ru')}\n`
     msg += '\n'
     msg += `✅ Отправлено:   ${stats.sent} / ${totalUsers}\n`
+    msg += `📤 В этот запуск: ${getRunSentCount(b, stats.sent)} (лимит: ${b.limit ?? 'все'})\n`
     msg += `👁 Открыто:       ${stats.opened} (${openPct}%)\n`
     msg += `🚫 Отписалось:    ${stats.unsubbed} (${unsubPct}%)\n`
 
