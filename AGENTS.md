@@ -24,6 +24,7 @@ LinkPost — бот для мессенджера MAX на Hono.js. Прод-о�
 │   ├── max-api.js            # Обёртка над MAX Bot REST API
 │   ├── storage.js            # Слой Vercel KV (ключи, пользователи)
 │   ├── broadcast.js          # Рассылки по пользователям
+│   ├── broadcast-runner.js   # Движок рассылки «волнами» (лимит, память :sent)
 │   ├── nav.js                # Кнопки навигации в сообщениях
 │   └── kv-mock.js            # In-memory-реализация KV для локальной разработки
 ├── scripts/

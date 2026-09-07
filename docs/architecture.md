@@ -12,6 +12,7 @@ LinkPost использует Layered Architecture (слоистую архит�
 lib/
 ├── max-api.js        # Слой интеграции — обёртка над MAX Bot REST API
 ├── storage.js        # Слой данных — работа с Vercel KV
+├── broadcast-runner.js  # Движок рассылок: волны, лимит, память :sent
 └── kv-mock.js        # Мок KV для локальной разработки
 
 api/
@@ -36,6 +37,21 @@ users_all        → Set<user_id>                   # Все пользоват�
 ```
 
 Индекс `user_links:<userId>` заполняется при создании связки и очищается при удалении.
+
+## Рассылки (broadcast)
+
+```
+broadcast:<id>               → { text, images, buttons, status, limit, _run_sent_at_start, ... }
+broadcast:<id>:sent          → Set<user_id>   # «Память»: кто получил ЭТУ рассылку (навсегда)
+broadcast:<id>:run_attempted → Set<user_id>   # Обработанные в текущем запуске
+broadcast:<id>:delivered|opened|unsubbed|failed → Set<user_id>  # Статистика
+broadcasts:all               → Set<id>
+broadcasts:scheduled         → ZSet<score=время, member=id>
+```
+
+## Рассылка «волнами»
+
+Админ выбирает лимит получателей (100/200/500/1000, свой ввод или «Всем»). Получатели — старейшие по `first_seen`, ещё не получившие эту рассылку (`:sent`). `lib/broadcast-runner.js` — единый движок для кнопки и `/process-broadcasts`: на каждом батче пересчитывает список кандидатов, прогресс считается как `scard(:sent) − _run_sent_at_start`; повторный запуск («Разослать ещё») идёт только не получившим.
 
 ## Поток данных
 
