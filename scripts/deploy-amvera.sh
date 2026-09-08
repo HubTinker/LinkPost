@@ -24,6 +24,7 @@ FILES=(
   api/index.js
   certs/mincifra-chain.pem
   certs/mincifra-chain-v2.pem
+  lib/broadcast-runner.js
   lib/broadcast.js
   lib/kv-mock.js
   lib/max-api.js
