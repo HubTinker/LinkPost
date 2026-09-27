@@ -5,6 +5,7 @@ const { kv } = await import('../lib/kv-mock.js')
 const {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
   updateLinkMessage,
+  setPendingEdit, getPendingEdit, clearPendingEdit,
   saveUser, getUserCount, getAllUsers,
   addUserToLink, getLinkSubs,
   markInactive, reactivateUser,
@@ -382,5 +383,32 @@ describe('updateLinkMessage', () => {
     assert.equal(ok, true)
     assert.equal((await kv.get('link:VIP')).message, 'New legacy')
     assert.equal(await kv.get('link:vip'), null)
+  })
+})
+
+describe('setPendingEdit / getPendingEdit / clearPendingEdit', () => {
+  beforeEach(() => kv._clear())
+
+  it('should roundtrip pending edit with structure', async () => {
+    await setPendingEdit(123, 'vip', 555)
+    const pending = await getPendingEdit(123)
+    assert.equal(pending.key, 'vip')
+    assert.equal(pending.chat_id, 555)
+    assert.equal(typeof pending.set_at, 'number')
+  })
+
+  it('should return null after clear', async () => {
+    await setPendingEdit(123, 'vip', 555)
+    await clearPendingEdit(123)
+    assert.equal(await getPendingEdit(123), null)
+  })
+
+  it('should return null when never set', async () => {
+    assert.equal(await getPendingEdit(777), null)
+  })
+
+  it('should allow chat_id null', async () => {
+    await setPendingEdit(123, 'vip', null)
+    assert.equal((await getPendingEdit(123)).chat_id, null)
   })
 })
