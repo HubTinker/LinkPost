@@ -985,6 +985,7 @@ describe('/link command', () => {
     assert.ok(responseCall.body.text.includes(expectedDeeplink), 'should show deeplink')
     assert.deepEqual(responseCall.body.attachments[0].payload.buttons, [
       [
+        { type: 'callback', text: '✏️', payload: 'edit_msg:vip' },
         { type: 'callback', text: '🗑 Удалить', payload: 'del:vip' },
         { type: 'callback', text: '👁 Посмотреть', payload: 'link_preview:vip' }
       ],

@@ -38,3 +38,34 @@ describe('answerCallback', () => {
     assert.equal(fetchCalls.filter(c => c.url.includes('/answers')).length, 0)
   })
 })
+
+describe('showLinkCard — кнопка редактирования', () => {
+  beforeEach(() => { fetchCalls = [] ; kv._clear() })
+
+  it('/link shows card with edit button in first row', async () => {
+    await setLink('vip', 'https://example.com', 'Hello', 123)
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/link vip' } },
+      user: { user_id: 123, name: 'Admin' }
+    })
+    const card = fetchCalls.find(c => c.body?.text?.includes('🔑 Ключ: vip'))
+    assert.ok(card, 'card message not found')
+    const firstRow = card.body.attachments[0].payload.buttons[0]
+    assert.equal(firstRow[0].text, '✏️')
+    assert.equal(firstRow[0].payload, 'edit_msg:vip')
+    assert.equal(firstRow[1].payload, 'del:vip')
+    assert.equal(firstRow[2].payload, 'link_preview:vip')
+  })
+
+  it('card renders without notice for existing callers', async () => {
+    await setLink('vip', 'https://example.com', 'Hello', 123)
+    await handleMessage({
+      chat_id: 1,
+      message: { body: { text: '/link vip' } },
+      user: { user_id: 123, name: 'Admin' }
+    })
+    const card = fetchCalls.find(c => c.body?.text?.includes('🔑 Ключ: vip'))
+    assert.ok(card.body.text.startsWith('🔑 Ключ: vip'), 'notice must be absent by default')
+  })
+})

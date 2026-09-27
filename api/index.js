@@ -144,7 +144,7 @@ async function showLinksList (chatId, userId, page = 1, editMsgId = null, useNav
 const MAX_LINK_MESSAGE_DISPLAY = 3000
 
 /** Показать карточку связки: текст, ссылка, диплинк + кнопки */
-async function showLinkCard (chatId, userId, key, editMsgId = null, useNavFallback = true) {
+async function showLinkCard (chatId, userId, key, editMsgId = null, useNavFallback = true, notice = null) {
   const link = await getLink(key)
   if (!isAdmin(userId) && (!link || !canManage(userId, link))) {
     return sendMessage(chatId, `⛔ Ключ "${key}" не найден или у вас нет прав.`)
@@ -155,7 +155,7 @@ async function showLinkCard (chatId, userId, key, editMsgId = null, useNavFallba
     ? (link.message.length > MAX_LINK_MESSAGE_DISPLAY ? `${link.message.slice(0, MAX_LINK_MESSAGE_DISPLAY)}...` : link.message)
     : '(нет текста)'
 
-  const text =
+  const text = (notice ? `${notice}\n\n` : '') +
     `🔑 Ключ: ${key}\n\n` +
     `💬 Сообщение:\n${displayMessage}\n\n` +
     `🔗 Ссылка: ${link.url}\n\n` +
@@ -163,6 +163,7 @@ async function showLinkCard (chatId, userId, key, editMsgId = null, useNavFallba
 
   return renderScreen({ chatId, editMsgId, useNavFallback, text, buttons: [
     [
+      { type: 'callback', text: '✏️', data: `edit_msg:${key}` },
       { type: 'callback', text: '🗑 Удалить', data: `del:${key}` },
       { type: 'callback', text: '👁 Посмотреть', data: `link_preview:${key}` }
     ],
