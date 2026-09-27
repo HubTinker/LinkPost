@@ -8,10 +8,11 @@
 
 import { Hono } from 'hono'
 import { handle } from 'hono/vercel'
-import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead, sendBroadcastMessage, editMessage, editMessageWithKeyboard, deleteMessage, extractMessageId } from '../lib/max-api.js'
+import { sendMessage, sendMessageWithLink, sendMessageWithKeyboard, registerWebhook, markAsRead, sendBroadcastMessage, editMessage, editMessageWithKeyboard, deleteMessage, extractMessageId, answerCallback } from '../lib/max-api.js'
 import { setNavMessageId, getNavMessageId } from '../lib/nav.js'
 import {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
+  updateLinkMessage, setPendingEdit, getPendingEdit, clearPendingEdit,
   saveUser, getUserCount, getAllUsers, reactivateUser, markInactive, removeUser,
   getLinkSubCount, getLinkAge, getDailyStat, getDailyTotal, getStatRange, getTotalRange, getLinkCount,
   getLinksRankedBySubs,
@@ -51,7 +52,7 @@ const isAdmin = (userId) => ADMIN_IDS.includes(userId)
 
 // Колбэки, доступные не-админам (с внутренней проверкой прав)
 const ALLOWED_NON_ADMIN_PAYLOADS = ['links', 'back']
-const ALLOWED_NON_ADMIN_PREFIXES = ['links_page:', 'link_preview:', 'del:', 'confirm_del:']
+const ALLOWED_NON_ADMIN_PREFIXES = ['links_page:', 'link_preview:', 'del:', 'confirm_del:', 'edit_msg:', 'edit_cancel:']
 
 const canManage = (userId, link) => isAdmin(userId) || link?.creator_id === userId
 
@@ -265,6 +266,15 @@ async function getAwaitingLimitBroadcast (userId) {
     return all.find(b => b._awaiting_limit && b.created_by === userId) || null
   } catch {
     return null
+  }
+}
+
+/** Снятие pending_edit: сбой KV не должен ломать UX (флаг сам протухнет через 15 мин) */
+async function clearPendingEditQuietly (userId) {
+  try {
+    await clearPendingEdit(userId)
+  } catch (e) {
+    alog('WARN', 'clearPendingEdit failed for user %d: %s', userId, e.message)
   }
 }
 
@@ -671,6 +681,15 @@ async function handleCallbackQuery (update) {
 
   const userId = cb.user.user_id
   const editMsgId = update.message?.body?.mid ?? update.message?.message_id ?? null
+
+  // ACK: гасим спиннер MAX до любых проверок (лимит MAX — 2 ack/сек на диалог;
+  // при ошибке только лог, обработка не блокируется)
+  answerCallback(cb.callback_id).catch(e => alog('WARN', 'answerCallback failed: %s', e.message))
+
+  // Любая кнопка вне edit-флоу выводит пользователя из режима редактирования
+  if (!cb.payload.startsWith('edit_msg:') && !cb.payload.startsWith('edit_cancel:')) {
+    await clearPendingEditQuietly(userId)
+  }
 
   const isAllowedPayload = ALLOWED_NON_ADMIN_PAYLOADS.includes(cb.payload) ||
     ALLOWED_NON_ADMIN_PREFIXES.some(p => cb.payload.startsWith(p))
@@ -1157,6 +1176,48 @@ async function handleCallbackQuery (update) {
       return sendMessage(chatId, 'Используйте /links для просмотра ваших связок.')
     }
     return showAdminMenu(chatId, userId, editMsgId)
+  }
+
+  if (cb.payload.startsWith('edit_msg:')) {
+    const key = cb.payload.slice('edit_msg:'.length)
+    const link = await getLink(key)
+    if (!isAdmin(userId) && (!link || !canManage(userId, link))) {
+      alog('DEBUG', ' edit_msg: denied, key=%s, userId=%d', key, userId)
+      return sendMessage(chatId, `⛔ Ключ "${key}" не найден или у вас нет прав.`)
+    }
+    if (!link) return sendMessage(chatId, `❌ Ключ "${key}" не найден.`)
+
+    // Взаимоисключение: режим «Свой вариант» рассылки не должен жить вместе с pending_edit
+    try {
+      const awaiting = await getAwaitingLimitBroadcast(userId)
+      if (awaiting) await updateBroadcast(awaiting.id, { _awaiting_limit: false })
+    } catch (e) {
+      alog('WARN', 'edit_msg: failed to clear _awaiting_limit: %s', e.message)
+    }
+
+    try {
+      await setPendingEdit(userId, key, chatId)
+    } catch (e) {
+      alog('WARN', 'edit_msg: setPendingEdit failed: %s', e.message)
+      return sendMessage(chatId, '❌ Не удалось начать редактирование, попробуйте ещё раз.')
+    }
+    alog('DEBUG', ' edit_msg: pending set, key=%s, userId=%d', key, userId)
+    return renderScreen({ chatId, editMsgId, text:
+      `✏️ Редактирование текста «${key}»\n\n` +
+      'Пришлите новый текст сообщения.\n' +
+      'Ограничение: 4096 символов.\n' +
+      'Ссылка и ключ не изменятся.',
+      buttons: [
+        [{ type: 'callback', text: '❌ Отмена', data: `edit_cancel:${key}` }]
+      ]
+    })
+  }
+
+  if (cb.payload.startsWith('edit_cancel:')) {
+    const key = cb.payload.slice('edit_cancel:'.length)
+    await clearPendingEditQuietly(userId)
+    alog('DEBUG', ' edit_cancel: pending cleared, key=%s, userId=%d', key, userId)
+    return showLinkCard(chatId, userId, key, editMsgId)
   }
 
   if (cb.payload.startsWith('del:')) {
