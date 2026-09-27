@@ -423,7 +423,23 @@ async function handleMessage (update) {
 
   const text = (message?.body?.text ?? '').trim()
 
-  if (!text) return
+  // Режим редактирования: читаем флаг ДО проверки пустого текста,
+  // иначе медиа-сообщения в режиме молчат (спека §3.3, §3.5)
+  let pending = null
+  if (user?.user_id) {
+    try {
+      pending = await getPendingEdit(user.user_id)
+    } catch (e) {
+      alog('WARN', 'getPendingEdit failed: %s', e.message)
+    }
+  }
+
+  if (!text) {
+    if (pending) {
+      return sendMessage(chat_id, '⚠️ Жду текстовое сообщение. Отправьте текст или нажмите «❌ Отмена».')
+    }
+    return
+  }
 
   // Сохраняем пользователя при каждом сообщении
   if (user?.user_id) {
@@ -450,6 +466,40 @@ async function handleMessage (update) {
   }
 
   const userId = user?.user_id
+
+  // ── Режим редактирования текста связки ──────────────────────────────────────
+  if (pending) {
+    if (text.startsWith('/')) {
+      // Команда в режиме: сначала фиксируем сброс, иначе следующий текст
+      // ошибочно запишется в связку; при сбое KV команду не выполняем
+      try {
+        await clearPendingEdit(userId)
+      } catch (e) {
+        alog('WARN', 'clearPendingEdit failed: %s', e.message)
+        return sendMessage(chat_id, '⚠️ Не удалось сбросить режим редактирования, попробуйте ещё раз.')
+      }
+      await sendMessage(chat_id, '⚠️ Режим редактирования сброшен.')
+      // обычный роутинг команды продолжается ниже
+    } else {
+      const pendingLink = await getLink(pending.key)
+      if (!pendingLink) {
+        await clearPendingEditQuietly(userId)
+        return sendMessage(chat_id, `❌ Ключ "${pending.key}" не найден.`)
+      }
+      if (!canManage(userId, pendingLink)) {
+        await clearPendingEditQuietly(userId)
+        return sendMessage(chat_id, '⛔ Вы можете редактировать только свои ключи.')
+      }
+      const updated = await updateLinkMessage(pending.key, text.slice(0, 4096))
+      if (!updated) {
+        await clearPendingEditQuietly(userId)
+        return sendMessage(chat_id, `❌ Ключ "${pending.key}" не найден.`)
+      }
+      await clearPendingEditQuietly(userId)
+      alog('DEBUG', ' pending_edit: key=%s updated by userId=%d', pending.key, userId)
+      return showLinkCard(chat_id, userId, pending.key, null, false, '✅ Текст обновлён!')
+    }
+  }
 
   // ── Команды ─────────────────────────────────────────────────────────────────
 

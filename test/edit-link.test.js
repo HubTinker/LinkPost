@@ -140,3 +140,73 @@ describe('handleCallbackQuery — edit_msg / edit_cancel', () => {
     assert.equal(await getPendingEdit(123), null)
   })
 })
+
+describe('handleMessage — pending_edit', () => {
+  beforeEach(() => { fetchCalls = []; kv._clear() })
+
+  function msgUpdate (text, userId = 123) {
+    return {
+      chat_id: 1,
+      message: text === undefined ? { body: {} } : { body: { text } },
+      user: { user_id: userId, name: 'U' }
+    }
+  }
+
+  it('saves new text, clears flag, shows card with notice', async () => {
+    await setLink('vip', 'https://example.com', 'Old text', 123)
+    await setPendingEdit(123, 'vip', 1)
+    await handleMessage(msgUpdate('New text'))
+    const link = await kv.get('link:vip')
+    assert.equal(link.message, 'New text')
+    assert.equal(await getPendingEdit(123), null)
+    const card = fetchCalls.find(c => c.body?.text?.includes('✅ Текст обновлён!'))
+    assert.ok(card, 'card with notice not found')
+    assert.ok(card.body.text.includes('🔑 Ключ: vip'))
+    assert.ok(card.body.text.includes('💬 Сообщение:\nNew text'))
+  })
+
+  it('command while pending: resets mode and runs command', async () => {
+    await setLink('vip', 'https://example.com', 'Old', 123)
+    await setPendingEdit(123, 'vip', 1)
+    await handleMessage(msgUpdate('/links'))
+    assert.equal(await getPendingEdit(123), null)
+    const notice = fetchCalls.find(c => c.body?.text?.includes('⚠️ Режим редактирования сброшен.'))
+    assert.ok(notice, 'reset notice not sent')
+    const list = fetchCalls.find(c => c.body?.text?.includes('📋 Связки (1, стр. 1 из 1)'))
+    assert.ok(list, 'command did not run after reset')
+  })
+
+  it('non-text message while pending: warns and keeps flag', async () => {
+    await setPendingEdit(123, 'vip', 1)
+    await handleMessage(msgUpdate(undefined))
+    const warn = fetchCalls.find(c => c.body?.text?.includes('⚠️ Жду текстовое сообщение. Отправьте текст или нажмите «❌ Отмена».'))
+    assert.ok(warn, 'warning not sent')
+    assert.ok(await getPendingEdit(123), 'flag must stay active')
+  })
+
+  it('key deleted while pending: error and flag cleared', async () => {
+    await setPendingEdit(123, 'ghost', 1)
+    await handleMessage(msgUpdate('some text'))
+    const err = fetchCalls.find(c => c.body?.text?.includes('❌ Ключ "ghost" не найден.'))
+    assert.ok(err, 'error not sent')
+    assert.equal(await getPendingEdit(123), null)
+  })
+
+  it('truncates incoming text to 4096', async () => {
+    await setLink('vip', 'https://example.com', 'Old', 123)
+    await setPendingEdit(123, 'vip', 1)
+    await handleMessage(msgUpdate('а'.repeat(5000)))
+    const link = await kv.get('link:vip')
+    assert.equal(link.message.length, 4096)
+  })
+
+  it('denies non-creator non-admin and clears flag', async () => {
+    await setLink('vip', 'https://example.com', 'Text', 999)
+    await setPendingEdit(555, 'vip', 1)
+    await handleMessage(msgUpdate('hijack attempt', 555))
+    const err = fetchCalls.find(c => c.body?.text?.includes('⛔ Вы можете редактировать только свои ключи.'))
+    assert.ok(err, 'denial not sent')
+    assert.equal(await getPendingEdit(555), null)
+    assert.equal((await kv.get('link:vip')).message, 'Text', 'link must stay untouched')
+  })
+})
