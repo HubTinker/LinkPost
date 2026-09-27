@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 const { kv } = await import('../lib/kv-mock.js')
 const {
   setLink, getLink, delLink, getAllLinks, getLinksByCreator,
+  updateLinkMessage,
   saveUser, getUserCount, getAllUsers,
   addUserToLink, getLinkSubs,
   markInactive, reactivateUser,
@@ -353,5 +354,33 @@ describe('getLinksRankedBySubs', () => {
     assert.equal(ranked[0].subCount, 2)
     assert.equal(ranked[1].key, 'x')
     assert.equal(ranked[1].subCount, 0)
+  })
+})
+
+describe('updateLinkMessage', () => {
+  beforeEach(() => kv._clear())
+
+  it('should update only message, preserving url/creator_id/created_at', async () => {
+    await setLink('vip', 'https://example.com', 'Old text', 123)
+    const before = await kv.get('link:vip')
+    const ok = await updateLinkMessage('vip', 'New text')
+    assert.equal(ok, true)
+    const link = await kv.get('link:vip')
+    assert.equal(link.message, 'New text')
+    assert.equal(link.url, 'https://example.com')
+    assert.equal(link.creator_id, 123)
+    assert.equal(link.created_at, before.created_at)
+  })
+
+  it('should return false for nonexistent key', async () => {
+    assert.equal(await updateLinkMessage('ghost', 'text'), false)
+  })
+
+  it('should find legacy key stored in original case', async () => {
+    await kv.set('link:VIP', { url: 'https://legacy.example', message: 'Old', creator_id: 1, created_at: 111 })
+    const ok = await updateLinkMessage('VIP', 'New legacy')
+    assert.equal(ok, true)
+    assert.equal((await kv.get('link:VIP')).message, 'New legacy')
+    assert.equal(await kv.get('link:vip'), null)
   })
 })
