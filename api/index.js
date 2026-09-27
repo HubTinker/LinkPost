@@ -269,12 +269,16 @@ async function getAwaitingLimitBroadcast (userId) {
   }
 }
 
-/** Снятие pending_edit: сбой KV не должен ломать UX (флаг сам протухнет через 15 мин) */
+/** Снятие pending_edit: сбой KV не должен ломать UX (флаг сам протухнет через 15 мин).
+ *  Возвращает true, если флага после вызова нет (сброс удался или его не было),
+ *  false — если сброс упал (WARNING уже залогирован). */
 async function clearPendingEditQuietly (userId) {
   try {
     await clearPendingEdit(userId)
+    return true
   } catch (e) {
     alog('WARN', 'clearPendingEdit failed for user %d: %s', userId, e.message)
+    return false
   }
 }
 
@@ -495,9 +499,12 @@ async function handleMessage (update) {
         await clearPendingEditQuietly(userId)
         return sendMessage(chat_id, `❌ Ключ "${pending.key}" не найден.`)
       }
-      await clearPendingEditQuietly(userId)
+      const cleared = await clearPendingEditQuietly(userId)
       alog('DEBUG', ' pending_edit: key=%s updated by userId=%d', pending.key, userId)
-      return showLinkCard(chat_id, userId, pending.key, null, false, '✅ Текст обновлён!')
+      const notice = cleared
+        ? '✅ Текст обновлён!'
+        : '✅ Текст обновлён!\n⚠️ Не удалось сбросить режим редактирования, попробуйте ещё раз.'
+      return showLinkCard(chat_id, userId, pending.key, null, false, notice)
     }
   }
 
@@ -1265,9 +1272,10 @@ async function handleCallbackQuery (update) {
 
   if (cb.payload.startsWith('edit_cancel:')) {
     const key = cb.payload.slice('edit_cancel:'.length)
-    await clearPendingEditQuietly(userId)
+    const cleared = await clearPendingEditQuietly(userId)
     alog('DEBUG', ' edit_cancel: pending cleared, key=%s, userId=%d', key, userId)
-    return showLinkCard(chatId, userId, key, editMsgId)
+    const notice = cleared ? null : '⚠️ Не удалось сбросить режим редактирования, попробуйте ещё раз.'
+    return showLinkCard(chatId, userId, key, editMsgId, true, notice)
   }
 
   if (cb.payload.startsWith('del:')) {

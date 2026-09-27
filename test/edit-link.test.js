@@ -210,3 +210,55 @@ describe('handleMessage — pending_edit', () => {
     assert.equal((await kv.get('link:vip')).message, 'Text', 'link must stay untouched')
   })
 })
+
+describe('pending_edit clear failure surfaced', () => {
+  beforeEach(() => { fetchCalls = []; kv._clear() })
+
+  const WARN = '⚠️ Не удалось сбросить режим редактирования, попробуйте ещё раз.'
+
+  function msgUpdate (text, userId = 123) {
+    return {
+      chat_id: 1,
+      message: { body: { text } },
+      user: { user_id: userId, name: 'U' }
+    }
+  }
+
+  function cbUpdate (payload, userId = 123) {
+    return {
+      update_type: 'message_callback',
+      callback: { payload, callback_id: 'cb.1', user: { user_id: userId } },
+      message: { recipient: { chat_id: 1 }, body: { mid: 'mid.1' } }
+    }
+  }
+
+  async function withDelFailure (fn) {
+    const originalDel = kv.del
+    kv.del = async () => { throw new Error('kv down') }
+    try {
+      await fn()
+    } finally {
+      kv.del = originalDel
+    }
+  }
+
+  it('save path appends warning when flag clear fails', async () => {
+    await setLink('vip', 'https://example.com', 'Old', 123)
+    await setPendingEdit(123, 'vip', 1)
+    await withDelFailure(() => handleMessage(msgUpdate('New text')))
+    const card = fetchCalls.find(c => c.body?.text?.includes('✅ Текст обновлён!'))
+    assert.ok(card, 'card with success notice not sent')
+    assert.ok(card.body.text.includes(WARN), 'warning line must be appended to notice')
+    assert.ok(await getPendingEdit(123), 'flag must stay set')
+  })
+
+  it('edit_cancel appends warning when flag clear fails', async () => {
+    await setLink('vip', 'https://example.com', 'Old', 123)
+    await setPendingEdit(123, 'vip', 1)
+    await withDelFailure(() => handleCallbackQuery(cbUpdate('edit_cancel:vip')))
+    const card = fetchCalls.find(c => c.body?.text?.includes('🔑 Ключ: vip'))
+    assert.ok(card, 'card must still be rendered')
+    assert.ok(card.body.text.includes(WARN), 'warning line must be appended to notice')
+    assert.ok(await getPendingEdit(123), 'flag must stay set')
+  })
+})
